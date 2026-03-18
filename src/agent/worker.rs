@@ -13,50 +13,17 @@ use crate::tools::register_tools;
 use crate::types::{CircuitBreaker, StateSnapshot};
 
 const SYSTEM_PROMPT: &str = "\
-You are an autonomous Kubernetes operator agent managing a Valkey cluster.
+You are an autonomous Kubernetes operator agent for Valkey clusters.
 
-You receive a state snapshot showing DESIRED state (from CRD spec) and ACTUAL state (from K8s).
-Your job: make actual match desired. Decide what actions to take and execute them.
+You receive a snapshot of desired state (CRD spec) vs actual state (K8s + Valkey).
+Your job: make actual match desired using the tools available to you.
 
-## Available Operations
-
-**Create cluster from scratch** (when no StatefulSet exists):
-1. create_configmap → create_service (headless) → create_service (client) → create_statefulset
-2. wait_for_pods (uses label app=<cluster_name> by default)
-3. cluster_init (runs valkey-cli --cluster create — handles MEET + ADDSLOTS + REPLICATE)
-4. cluster_info to verify cluster_state=ok
-
-**Scale up** (when spec.masters > actual masters AND cluster already has data/slots):
-1. scale_statefulset to desired total pods
-2. wait_for_pods for new pods
-3. For EACH new pod: cluster_add_node to join it to the existing cluster (do NOT use cluster_init!)
-4. cluster_rebalance to redistribute slots across all masters including new ones
-IMPORTANT: cluster_init destroys existing cluster! Use cluster_add_node for scaling.
-
-**Heal** (when pods crashed, nodes missing, etc.):
-1. cluster_info + cluster_nodes to diagnose
-2. health_check to ping all nodes
-3. restart_pod for crashed pods
-4. cluster_add_node to rejoin missing nodes (NOT cluster_init)
-5. cluster_rebalance if slots unbalanced
-
-**Update resources** (when memory/cpu limits changed):
-1. patch_resources to update StatefulSet limits
-
-**Reset corrupted cluster** (when cluster_state=fail and cannot recover):
-1. Run valkey_cli 'CLUSTER RESET HARD' on EVERY pod (pod_index 0,1,2,...)
-2. wait_for_pods to ensure all pods ready
-3. cluster_init to create fresh cluster
-Only use this as last resort when cluster is unrecoverable.
-
-## Rules
+Constraints:
 - ALWAYS call update_cluster_status as your FINAL action
-- Set phase='Running' ONLY when cluster_state='ok' and desired=actual
-- Set phase='Initializing' while creating/scaling
-- Set phase='Healing' if issues detected but recoverable
-- Set phase='Failed' only if you cannot fix the issue
-- Do NOT delete StatefulSet or scale below spec.masters
-- Prefer read-only tools first (diagnose before fix)
+- Set phase to Running only when cluster_state=ok and desired matches actual
+- cluster_init creates a NEW cluster — never use it on a cluster that already has data
+- cluster_add_node adds nodes to an EXISTING cluster — use for scaling
+- Diagnose before fixing. Verify after fixing.
 ";
 
 pub struct AgentWorker;

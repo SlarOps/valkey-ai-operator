@@ -181,91 +181,7 @@ impl Tool for ValkeyCli {
 }
 
 // ---------------------------------------------------------------------------
-// 2. ClusterNodes
-// ---------------------------------------------------------------------------
-
-pub struct ClusterNodes {
-    client: Arc<Client>,
-    cluster_name: String,
-    namespace: String,
-}
-
-impl ClusterNodes {
-    pub fn new(client: Arc<Client>, cluster_name: String, namespace: String) -> Self {
-        Self { client, cluster_name, namespace }
-    }
-}
-
-#[async_trait::async_trait]
-impl Tool for ClusterNodes {
-    fn name(&self) -> &str { "cluster_nodes" }
-
-    fn description(&self) -> &str {
-        "Run CLUSTER NODES on pod-0 and return the cluster topology."
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({ "type": "object", "properties": {}, "required": [] })
-    }
-
-    fn safety(&self) -> ToolSafety { ToolSafety::ReadOnly }
-
-    async fn execute(&self, _args: Value) -> ToolResult {
-        let pod = pod_name(&self.cluster_name, 0);
-        match kube_exec_valkey_cli(&self.client, &self.namespace, &pod, "CLUSTER NODES").await {
-            Ok(output) => ToolResult { success: true, output },
-            Err(e) => ToolResult { success: false, output: format!("error: {e}") },
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// 3. ClusterInfo
-// ---------------------------------------------------------------------------
-
-pub struct ClusterInfo {
-    client: Arc<Client>,
-    cluster_name: String,
-    namespace: String,
-}
-
-impl ClusterInfo {
-    pub fn new(client: Arc<Client>, cluster_name: String, namespace: String) -> Self {
-        Self { client, cluster_name, namespace }
-    }
-}
-
-#[async_trait::async_trait]
-impl Tool for ClusterInfo {
-    fn name(&self) -> &str { "cluster_info" }
-
-    fn description(&self) -> &str {
-        "Run CLUSTER INFO on pod-0 and return parsed cluster state."
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({ "type": "object", "properties": {}, "required": [] })
-    }
-
-    fn safety(&self) -> ToolSafety { ToolSafety::ReadOnly }
-
-    async fn execute(&self, _args: Value) -> ToolResult {
-        let pod = pod_name(&self.cluster_name, 0);
-        match kube_exec_valkey_cli(&self.client, &self.namespace, &pod, "CLUSTER INFO").await {
-            Ok(raw) => {
-                let parsed = parse_cluster_info(&raw);
-                match serde_json::to_string(&parsed) {
-                    Ok(json_str) => ToolResult { success: true, output: json_str },
-                    Err(e) => ToolResult { success: false, output: format!("json error: {e}") },
-                }
-            }
-            Err(e) => ToolResult { success: false, output: format!("error: {e}") },
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// 4. HealthCheck
+// 2. HealthCheck
 // ---------------------------------------------------------------------------
 
 pub struct HealthCheck {
@@ -340,7 +256,7 @@ impl Tool for HealthCheck {
 }
 
 // ---------------------------------------------------------------------------
-// 5. ClusterMeetAll — get all pod IPs and CLUSTER MEET them
+// 3. ClusterMeetAll — get all pod IPs and CLUSTER MEET them
 // ---------------------------------------------------------------------------
 
 pub struct ClusterMeetAll {
@@ -480,7 +396,7 @@ impl Tool for ClusterMeetAll {
 }
 
 // ---------------------------------------------------------------------------
-// 6. ClusterAddNode — add new nodes to an existing running cluster
+// 4. ClusterAddNode — add new nodes to an existing running cluster
 // ---------------------------------------------------------------------------
 
 pub struct ClusterAddNode {
@@ -578,7 +494,7 @@ impl Tool for ClusterAddNode {
 }
 
 // ---------------------------------------------------------------------------
-// 7. ClusterRebalance — rebalance slots across all masters
+// 5. ClusterRebalance — rebalance slots across all masters
 // ---------------------------------------------------------------------------
 
 pub struct ClusterRebalance {

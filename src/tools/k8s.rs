@@ -107,185 +107,69 @@ async fn apply_server_side(
 }
 
 // ---------------------------------------------------------------------------
-// 1. CreateStatefulSet
+// 1. KubectlApply — generic server-side apply for any K8s resource
 // ---------------------------------------------------------------------------
 
-pub struct CreateStatefulSet {
+pub struct KubectlApply {
     client: Arc<Client>,
-    cluster_name: String,
     namespace: String,
-    default_image: String,
 }
 
-impl CreateStatefulSet {
-    pub fn new(client: Arc<Client>, cluster_name: String, namespace: String, default_image: String) -> Self {
-        Self { client, cluster_name, namespace, default_image }
+impl KubectlApply {
+    pub fn new(client: Arc<Client>, namespace: String) -> Self {
+        Self { client, namespace }
     }
 }
 
 #[async_trait::async_trait]
-impl Tool for CreateStatefulSet {
-    fn name(&self) -> &str { "create_statefulset" }
+impl Tool for KubectlApply {
+    fn name(&self) -> &str { "kubectl_apply" }
 
     fn description(&self) -> &str {
-        "Server-side apply a StatefulSet for the Valkey cluster with the specified replicas and image."
+        "Apply a K8s resource manifest (JSON). Works like 'kubectl apply'. \
+         Supports: StatefulSet, Service, ConfigMap. Uses server-side apply. \
+         Agent composes the full manifest — you control every field. \
+         Args: {\"manifest\": <JSON object with apiVersion, kind, metadata, spec>}"
     }
 
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "replicas": { "type": "integer", "description": "Number of pod replicas" },
-                "image": { "type": "string", "description": "Container image for Valkey" }
+                "manifest": {
+                    "type": "object",
+                    "description": "Full K8s resource manifest with apiVersion, kind, metadata, spec"
+                }
             },
-            "required": ["replicas", "image"]
+            "required": ["manifest"]
         })
     }
 
     fn safety(&self) -> ToolSafety { ToolSafety::Validated }
 
     async fn execute(&self, args: Value) -> ToolResult {
-        let replicas = args["replicas"].as_u64().unwrap_or(3) as i64;
-        // Always use the image from spec — don't let the LLM override this
-        let image = &self.default_image;
-        let name = &self.cluster_name;
-
-        let manifest = json!({
-            "apiVersion": "apps/v1",
-            "kind": "StatefulSet",
-            "metadata": {
-                "name": name,
-                "namespace": &self.namespace,
-                "labels": { "app": name, "app.kubernetes.io/name": "valkey", "app.kubernetes.io/instance": name }
-            },
-            "spec": {
-                "serviceName": format!("{name}-headless"),
-                "replicas": replicas,
-                "selector": {
-                    "matchLabels": { "app": name, "app.kubernetes.io/name": "valkey", "app.kubernetes.io/instance": name }
-                },
-                "template": {
-                    "metadata": {
-                        "labels": { "app": name, "app.kubernetes.io/name": "valkey", "app.kubernetes.io/instance": name }
-                    },
-                    "spec": {
-                        "containers": [{
-                            "name": "valkey",
-                            "image": image,
-                            "ports": [
-                                { "containerPort": 6379, "name": "client" },
-                                { "containerPort": 16379, "name": "gossip" }
-                            ],
-                            "command": ["sh", "-c", &format!(
-                                "cp /etc/valkey-base/valkey.conf /tmp/valkey.conf && \
-                                 echo \"cluster-announce-hostname $(hostname).{name}-headless.{ns}.svc.cluster.local\" >> /tmp/valkey.conf && \
-                                 valkey-server /tmp/valkey.conf",
-                                name = name, ns = &self.namespace
-                            )],
-                            "volumeMounts": [{
-                                "name": "config",
-                                "mountPath": "/etc/valkey-base",
-                                "readOnly": true
-                            }],
-                            "resources": {
-                                "requests": { "cpu": "100m", "memory": "128Mi" },
-                                "limits": { "cpu": "500m", "memory": "512Mi" }
-                            }
-                        }],
-                        "volumes": [{
-                            "name": "config",
-                            "configMap": { "name": format!("{name}-config") }
-                        }]
-                    }
-                }
-            }
-        });
-
-        match apply_server_side(&self.client, &self.namespace, &manifest).await {
-            Ok(msg) => {
-                info!("CreateStatefulSet: {msg}");
-                ToolResult { success: true, output: msg }
-            }
-            Err(e) => ToolResult { success: false, output: format!("error: {e}") },
+        let manifest = &args["manifest"];
+        if manifest.is_null() {
+            return ToolResult { success: false, output: "missing manifest".into() };
         }
-    }
-}
 
-// ---------------------------------------------------------------------------
-// 2. CreateService
-// ---------------------------------------------------------------------------
-
-pub struct CreateService {
-    client: Arc<Client>,
-    cluster_name: String,
-    namespace: String,
-}
-
-impl CreateService {
-    pub fn new(client: Arc<Client>, cluster_name: String, namespace: String) -> Self {
-        Self { client, cluster_name, namespace }
-    }
-}
-
-#[async_trait::async_trait]
-impl Tool for CreateService {
-    fn name(&self) -> &str { "create_service" }
-
-    fn description(&self) -> &str {
-        "Server-side apply a headless or client Service for the Valkey cluster."
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "service_type": {
-                    "type": "string",
-                    "enum": ["headless", "client"],
-                    "description": "Type of service: 'headless' for StatefulSet DNS or 'client' for external access"
-                }
-            },
-            "required": ["service_type"]
-        })
-    }
-
-    fn safety(&self) -> ToolSafety { ToolSafety::Validated }
-
-    async fn execute(&self, args: Value) -> ToolResult {
-        let svc_type = args["service_type"].as_str().unwrap_or("headless");
-        let name = &self.cluster_name;
-
-        let (svc_name, cluster_ip, publish_not_ready) = match svc_type {
-            "headless" => (format!("{name}-headless"), Some("None"), true),
-            _ => (format!("{name}-client"), None, false),
+        // Validate required fields
+        let kind = match manifest["kind"].as_str() {
+            Some(k) => k,
+            None => return ToolResult { success: false, output: "manifest missing 'kind'".into() },
         };
-
-        let mut spec = json!({
-            "selector": { "app": name, "app.kubernetes.io/name": "valkey", "app.kubernetes.io/instance": name },
-            "ports": [{ "port": 6379, "targetPort": 6379, "name": "client" }]
-        });
-
-        if let Some(cip) = cluster_ip {
-            spec["clusterIP"] = json!(cip);
-        }
-        if publish_not_ready {
-            spec["publishNotReadyAddresses"] = json!(true);
+        if manifest["metadata"]["name"].as_str().is_none() {
+            return ToolResult { success: false, output: "manifest missing 'metadata.name'".into() };
         }
 
-        let manifest = json!({
-            "apiVersion": "v1",
-            "kind": "Service",
-            "metadata": {
-                "name": svc_name,
-                "namespace": &self.namespace,
-                "labels": { "app": name, "app.kubernetes.io/name": "valkey", "app.kubernetes.io/instance": name }
-            },
-            "spec": spec
-        });
+        // Use namespace from manifest or default
+        let ns = manifest["metadata"]["namespace"]
+            .as_str()
+            .unwrap_or(&self.namespace);
 
-        match apply_server_side(&self.client, &self.namespace, &manifest).await {
+        match apply_server_side(&self.client, ns, manifest).await {
             Ok(msg) => {
-                info!("CreateService: {msg}");
+                info!("kubectl_apply: {msg}");
                 ToolResult { success: true, output: msg }
             }
             Err(e) => ToolResult { success: false, output: format!("error: {e}") },
@@ -294,80 +178,7 @@ impl Tool for CreateService {
 }
 
 // ---------------------------------------------------------------------------
-// 3. CreateConfigMap
-// ---------------------------------------------------------------------------
-
-pub struct CreateConfigMap {
-    client: Arc<Client>,
-    cluster_name: String,
-    namespace: String,
-}
-
-impl CreateConfigMap {
-    pub fn new(client: Arc<Client>, cluster_name: String, namespace: String) -> Self {
-        Self { client, cluster_name, namespace }
-    }
-}
-
-#[async_trait::async_trait]
-impl Tool for CreateConfigMap {
-    fn name(&self) -> &str { "create_configmap" }
-
-    fn description(&self) -> &str {
-        "Server-side apply a ConfigMap containing valkey.conf for cluster mode."
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {},
-            "required": []
-        })
-    }
-
-    fn safety(&self) -> ToolSafety { ToolSafety::Validated }
-
-    async fn execute(&self, _args: Value) -> ToolResult {
-        let name = &self.cluster_name;
-        let config_name = format!("{name}-config");
-
-        let valkey_conf = [
-            "cluster-enabled yes",
-            "cluster-config-file nodes.conf",
-            "cluster-node-timeout 5000",
-            "cluster-preferred-endpoint-type hostname",
-            "appendonly yes",
-            "protected-mode no",
-            "bind 0.0.0.0",
-            "", // trailing newline
-        ]
-        .join("\n");
-
-        let manifest = json!({
-            "apiVersion": "v1",
-            "kind": "ConfigMap",
-            "metadata": {
-                "name": config_name,
-                "namespace": &self.namespace,
-                "labels": { "app": name, "app.kubernetes.io/name": "valkey", "app.kubernetes.io/instance": name }
-            },
-            "data": {
-                "valkey.conf": valkey_conf
-            }
-        });
-
-        match apply_server_side(&self.client, &self.namespace, &manifest).await {
-            Ok(msg) => {
-                info!("CreateConfigMap: {msg}");
-                ToolResult { success: true, output: msg }
-            }
-            Err(e) => ToolResult { success: false, output: format!("error: {e}") },
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// 4. PatchResources
+// 2. PatchResources
 // ---------------------------------------------------------------------------
 
 pub struct PatchResources {
@@ -451,68 +262,7 @@ impl Tool for PatchResources {
 }
 
 // ---------------------------------------------------------------------------
-// 5. ScaleStatefulSet
-// ---------------------------------------------------------------------------
-
-pub struct ScaleStatefulSet {
-    client: Arc<Client>,
-    cluster_name: String,
-    namespace: String,
-    min_masters: u32,
-}
-
-impl ScaleStatefulSet {
-    pub fn new(client: Arc<Client>, cluster_name: String, namespace: String, min_masters: u32) -> Self {
-        Self { client, cluster_name, namespace, min_masters }
-    }
-}
-
-#[async_trait::async_trait]
-impl Tool for ScaleStatefulSet {
-    fn name(&self) -> &str { "scale_statefulset" }
-
-    fn description(&self) -> &str {
-        "Scale the Valkey StatefulSet replicas after validating minimum masters guardrail."
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "replicas": { "type": "integer", "description": "Desired number of replicas" }
-            },
-            "required": ["replicas"]
-        })
-    }
-
-    fn safety(&self) -> ToolSafety { ToolSafety::Validated }
-
-    async fn execute(&self, args: Value) -> ToolResult {
-        let replicas = match args["replicas"].as_u64() {
-            Some(v) => v as u32,
-            None => return ToolResult { success: false, output: "missing replicas".into() },
-        };
-
-        if let Err(e) = validate_scale_guardrail(replicas, self.min_masters) {
-            return ToolResult { success: false, output: format!("guardrail rejected: {e}") };
-        }
-
-        let patch = json!({ "spec": { "replicas": replicas } });
-        let api: Api<StatefulSet> = Api::namespaced((*self.client).clone(), &self.namespace);
-        let pp = PatchParams::default();
-        match api.patch(&self.cluster_name, &pp, &Patch::Merge(&patch)).await {
-            Ok(_) => {
-                let msg = format!("scaled to {replicas} replicas");
-                info!("ScaleStatefulSet: {msg}");
-                ToolResult { success: true, output: msg }
-            }
-            Err(e) => ToolResult { success: false, output: format!("error: {e}") },
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// 6. GetPodStatus
+// 3. GetPodStatus
 // ---------------------------------------------------------------------------
 
 pub struct GetPodStatus {
@@ -586,7 +336,7 @@ impl Tool for GetPodStatus {
 }
 
 // ---------------------------------------------------------------------------
-// 7. WaitForPods
+// 4. WaitForPods
 // ---------------------------------------------------------------------------
 
 pub struct WaitForPods {
@@ -671,7 +421,7 @@ impl Tool for WaitForPods {
 }
 
 // ---------------------------------------------------------------------------
-// 8. GetEvents
+// 5. GetEvents
 // ---------------------------------------------------------------------------
 
 pub struct GetEvents {
@@ -734,7 +484,7 @@ impl Tool for GetEvents {
 }
 
 // ---------------------------------------------------------------------------
-// 9. GetPodLogs
+// 6. GetPodLogs
 // ---------------------------------------------------------------------------
 
 pub struct GetPodLogs {
@@ -788,7 +538,7 @@ impl Tool for GetPodLogs {
 }
 
 // ---------------------------------------------------------------------------
-// 10. RestartPod
+// 7. RestartPod
 // ---------------------------------------------------------------------------
 
 pub struct RestartPod {
@@ -844,7 +594,7 @@ impl Tool for RestartPod {
 // Tests
 // ---------------------------------------------------------------------------
 
-// 11. UpdateClusterStatus
+// 8. UpdateClusterStatus
 // ---------------------------------------------------------------------------
 // Agent calls this to update the ValkeyCluster CRD status based on actual
 // cluster health. This is the ONLY way to transition phases (e.g. to Running).
@@ -942,7 +692,7 @@ impl Tool for UpdateClusterStatus {
 }
 
 // ---------------------------------------------------------------------------
-// 12. PodExec — run arbitrary command in a pod via kube attach API
+// 9. PodExec — run arbitrary command in a pod via kube attach API
 // ---------------------------------------------------------------------------
 
 pub struct PodExec {
