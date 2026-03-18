@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valkey-ai-operator
+  namespace: valkey-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: valkey-ai-operator
+  template:
+    metadata:
+      labels:
+        app: valkey-ai-operator
+    spec:
+      serviceAccountName: valkey-ai-operator
+      containers:
+        - name: operator
+          image: valkey-ai-operator:latest
+          env:
+            - name: RUST_LOG
+              value: "valkey_ai_operator=info"
+            - name: WATCH_NAMESPACE
+              value: "default"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"

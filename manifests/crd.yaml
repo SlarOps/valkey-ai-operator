@@ -1,0 +1,207 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: valkeyclusters.valkey.krust.io
+spec:
+  group: valkey.krust.io
+  names:
+    categories: []
+    kind: ValkeyCluster
+    plural: valkeyclusters
+    shortNames: []
+    singular: valkeycluster
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.masters
+      name: Masters
+      type: integer
+    - jsonPath: .status.readyNodes
+      name: Ready
+      type: integer
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ValkeyClusterSpec via `CustomResource`
+        properties:
+          spec:
+            description: Desired state of a ValkeyCluster.
+            properties:
+              agent:
+                default:
+                  enabled: false
+                  health_check_interval: 30
+                  max_memory_scale_factor: 2.0
+                  provider: vertex
+                  self_healing: false
+                description: AI agent configuration.
+                properties:
+                  api_key_secret_ref:
+                    description: Reference to a secret containing the agent's API key (required for anthropic provider).
+                    nullable: true
+                    properties:
+                      key:
+                        description: Key within the secret.
+                        type: string
+                      name:
+                        description: Name of the secret.
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  enabled:
+                    default: false
+                    description: Whether the agent is enabled.
+                    type: boolean
+                  health_check_interval:
+                    default: 30
+                    description: Interval in seconds between health checks.
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                  max_memory_scale_factor:
+                    default: 2.0
+                    description: Factor by which the agent may scale memory limits.
+                    format: double
+                    type: number
+                  project_id:
+                    description: GCP project ID for Vertex AI.
+                    nullable: true
+                    type: string
+                  provider:
+                    default: vertex
+                    description: 'LLM provider: "vertex" (default) or "anthropic".'
+                    type: string
+                  region:
+                    description: GCP region for Vertex AI (e.g. "us-central1").
+                    nullable: true
+                    type: string
+                  self_healing:
+                    default: false
+                    description: Whether the agent should perform self-healing actions.
+                    type: boolean
+                type: object
+              image:
+                description: Override the default container image.
+                nullable: true
+                type: string
+              masters:
+                description: Number of master nodes.
+                format: uint32
+                minimum: 0.0
+                type: integer
+              replicas_per_master:
+                default: 0
+                description: Number of replicas per master.
+                format: uint32
+                minimum: 0.0
+                type: integer
+              resources:
+                default: {}
+                description: Resource requirements for each Valkey pod.
+                properties:
+                  limits:
+                    description: CPU/memory resource specification.
+                    nullable: true
+                    properties:
+                      cpu:
+                        description: CPU amount (e.g. "500m", "1").
+                        nullable: true
+                        type: string
+                      memory:
+                        description: Memory amount (e.g. "512Mi", "1Gi").
+                        nullable: true
+                        type: string
+                    type: object
+                  requests:
+                    description: CPU/memory resource specification.
+                    nullable: true
+                    properties:
+                      cpu:
+                        description: CPU amount (e.g. "500m", "1").
+                        nullable: true
+                        type: string
+                      memory:
+                        description: Memory amount (e.g. "512Mi", "1Gi").
+                        nullable: true
+                        type: string
+                    type: object
+                type: object
+              version:
+                description: Valkey version to deploy (e.g. "7.2").
+                type: string
+            required:
+            - masters
+            - version
+            type: object
+          status:
+            description: Observed state of a ValkeyCluster.
+            nullable: true
+            properties:
+              cluster_state:
+                description: Detailed cluster state string reported by Valkey.
+                nullable: true
+                type: string
+              conditions:
+                description: List of conditions on this cluster.
+                items:
+                  description: A single condition on the ValkeyCluster.
+                  properties:
+                    condition_type:
+                      description: Type of the condition (e.g. "Ready", "Healing").
+                      type: string
+                    status:
+                      description: Status of the condition ("True", "False", "Unknown").
+                      type: string
+                  required:
+                  - condition_type
+                  - status
+                  type: object
+                type: array
+              last_agent_action:
+                description: Description of the last action taken by the agent.
+                nullable: true
+                type: string
+              last_agent_action_time:
+                description: Timestamp of the last agent action.
+                nullable: true
+                type: string
+              last_health_check:
+                description: Timestamp of the last health check.
+                nullable: true
+                type: string
+              masters:
+                description: Number of master nodes currently recognised.
+                format: uint32
+                minimum: 0.0
+                nullable: true
+                type: integer
+              phase:
+                description: High-level lifecycle phase.
+                enum:
+                - Pending
+                - Initializing
+                - Running
+                - Healing
+                - Failed
+                nullable: true
+                type: string
+              ready_nodes:
+                description: Number of pods that are ready.
+                format: uint32
+                minimum: 0.0
+                nullable: true
+                type: integer
+            type: object
+        required:
+        - spec
+        title: ValkeyCluster
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
