@@ -1,0 +1,17 @@
+apiVersion: pilotis.io/v1
+kind: AIResource
+metadata:
+  name: my-valkey
+spec:
+  skill: valkey-cluster
+  goal: "Run a 3-master Valkey cluster with 1 replica each, 1Gi memory"
+  image: valkey/valkey:7
+  resources:
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+  agent:
+    provider: anthropic
+    api_key_secret_ref:
+      name: anthropic-key
+      key: api-key
