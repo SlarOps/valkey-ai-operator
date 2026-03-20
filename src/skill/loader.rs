@@ -65,7 +65,7 @@ pub fn parse_skill_md(content: &str) -> Result<(SkillConfig, String)> {
 /// Validate that all files referenced in the skill config exist.
 pub fn validate_skill_files(skill_dir: &Path, config: &SkillConfig) -> Result<()> {
     for monitor in &config.monitors {
-        let script_path = skill_dir.join("scripts").join(&monitor.script);
+        let script_path = skill_dir.join(&monitor.script);
         if !script_path.exists() {
             return Err(anyhow!(
                 "Monitor '{}' references missing script: {:?}",
@@ -76,7 +76,7 @@ pub fn validate_skill_files(skill_dir: &Path, config: &SkillConfig) -> Result<()
     }
 
     for action in &config.actions {
-        let script_path = skill_dir.join("scripts").join(&action.script);
+        let script_path = skill_dir.join(&action.script);
         if !script_path.exists() {
             return Err(anyhow!(
                 "Action '{}' references missing script: {:?}",
@@ -87,7 +87,7 @@ pub fn validate_skill_files(skill_dir: &Path, config: &SkillConfig) -> Result<()
     }
 
     for (agent_name, agent_def) in &config.agents {
-        let prompt_path = skill_dir.join("prompts").join(&agent_def.system_prompt_file);
+        let prompt_path = skill_dir.join(&agent_def.system_prompt_file);
         if !prompt_path.exists() {
             return Err(anyhow!(
                 "Agent '{}' references missing prompt file: {:?}",
@@ -108,7 +108,7 @@ pub fn load_agent_prompts(
     let mut prompts = HashMap::new();
 
     for (agent_name, agent_def) in &config.agents {
-        let prompt_path = skill_dir.join("prompts").join(&agent_def.system_prompt_file);
+        let prompt_path = skill_dir.join(&agent_def.system_prompt_file);
         let content = std::fs::read_to_string(&prompt_path)
             .with_context(|| format!("Failed to read prompt file {:?}", prompt_path))?;
         prompts.insert(agent_name.clone(), content);
@@ -141,15 +141,15 @@ description: A test skill
 monitors:
   - name: check-health
     interval: 30s
-    script: health.sh
+    script: scripts/health.sh
     trigger_when: "exit_code != 0"
 actions:
   - name: restart
     risk: low
-    script: restart.sh
+    script: scripts/restart.sh
 agents:
   responder:
-    system_prompt_file: responder.md
+    system_prompt_file: prompts/responder.md
 ---
 # Test Skill
 
