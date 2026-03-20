@@ -1,9 +1,72 @@
 pub mod k8s;
+pub mod runtime;
+pub mod state;
 pub mod template;
 
 use crate::agent::tool::Tool;
+use crate::crd::GuardrailSpec;
+use crate::monitor::registry::MonitorRegistry;
+use crate::skill::types::LoadedSkill;
+use kube::Client;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
-/// Stub: returns empty tool list. Will be replaced with role-based registration in Phase 3.
-pub fn register_tools() -> Vec<Box<dyn Tool>> {
-    Vec::new()
+/// Register tools for a specific agent role
+pub fn register_tools_for_role(
+    role: &str,
+    client: Client,
+    skill: Arc<LoadedSkill>,
+    resource_name: &str,
+    resource_namespace: &str,
+    image: &str,
+    goal: &str,
+    monitor_registry: Arc<Mutex<MonitorRegistry>>,
+    guardrails: Option<GuardrailSpec>,
+) -> Vec<Box<dyn Tool>> {
+    let denied_commands = guardrails
+        .as_ref()
+        .map(|g| g.denied_commands.clone())
+        .unwrap_or_default();
+
+    let mut tools: Vec<Box<dyn Tool>> = match role {
+        "planner" | "simulator" => vec![
+            Box::new(state::GetState::new(
+                client.clone(), resource_namespace, resource_name,
+                &skill.config.name, goal, image, monitor_registry.clone(),
+            )),
+            Box::new(k8s::GetEvents::new(client.clone(), resource_namespace, resource_name)),
+        ],
+        "executor" => vec![
+            Box::new(runtime::RunAction::new(
+                client.clone(), skill.clone(), resource_namespace, resource_name, denied_commands.clone(),
+            )),
+            Box::new(runtime::ApplyTemplate::new(
+                client.clone(), skill.clone(), resource_namespace, resource_name, image,
+            )),
+            Box::new(state::GetState::new(
+                client.clone(), resource_namespace, resource_name,
+                &skill.config.name, goal, image, monitor_registry.clone(),
+            )),
+            Box::new(k8s::GetPodLogs::new(client.clone(), resource_namespace)),
+            Box::new(k8s::WaitForReady::new(client.clone(), resource_namespace, resource_name)),
+            Box::new(k8s::GetEvents::new(client.clone(), resource_namespace, resource_name)),
+        ],
+        "verifier" => vec![
+            Box::new(state::GetState::new(
+                client.clone(), resource_namespace, resource_name,
+                &skill.config.name, goal, image, monitor_registry.clone(),
+            )),
+            Box::new(state::UpdateStatus::new(client.clone(), resource_namespace, resource_name)),
+            Box::new(k8s::GetEvents::new(client.clone(), resource_namespace, resource_name)),
+        ],
+        _ => vec![],
+    };
+
+    // Filter by skill allowed-tools if specified
+    if let Some(allowed) = &skill.config.allowed_tools {
+        let allowed_set: HashSet<&str> = allowed.split(',').map(|s| s.trim()).collect();
+        tools.retain(|t| allowed_set.contains(t.name()));
+    }
+
+    tools
 }
