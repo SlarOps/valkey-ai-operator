@@ -1,25 +1,25 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: pilotis-operator
-  namespace: pilotis-system
+  name: krust-operator
+  namespace: krust-system
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: pilotis-operator
+      app: krust-operator
   template:
     metadata:
       labels:
-        app: pilotis-operator
+        app: krust-operator
     spec:
-      serviceAccountName: pilotis-operator
+      serviceAccountName: krust-operator
       containers:
-        - name: pilotis-operator
-          image: pilotis-operator:latest
+        - name: krust-operator
+          image: krust-operator:latest
           env:
             - name: RUST_LOG
-              value: "info,pilotis_operator=debug"
+              value: "info,krust_operator=debug"
             - name: SKILLS_DIR
               value: "/skills"
           resources:
@@ -36,5 +36,5 @@ spec:
       volumes:
         - name: skills
           configMap:
-            name: pilotis-skills
+            name: krust-skills
             optional: true

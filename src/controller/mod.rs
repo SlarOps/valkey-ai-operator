@@ -68,7 +68,7 @@ pub async fn run(client: Client) {
 
     let resources: Api<AIResource> = Api::all(client.clone());
 
-    info!("Starting Pilotis operator controller...");
+    info!("Starting Krust operator controller...");
 
     Controller::new(resources, watcher::Config::default())
         .run(

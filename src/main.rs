@@ -1,4 +1,4 @@
-use pilotis_operator::controller;
+use krust_operator::controller;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

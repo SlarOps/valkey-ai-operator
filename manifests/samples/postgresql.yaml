@@ -1,4 +1,4 @@
-apiVersion: pilotis.io/v1
+apiVersion: krust.io/v1
 kind: AIResource
 metadata:
   name: my-pg

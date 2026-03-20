@@ -1,4 +1,4 @@
-use pilotis_operator::crd::AIResource;
+use krust_operator::crd::AIResource;
 use kube::CustomResourceExt;
 
 fn main() {

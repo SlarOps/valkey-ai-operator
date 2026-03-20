@@ -118,7 +118,7 @@ pub struct GuardrailSpec {
 /// Desired state of an AIResource.
 #[derive(CustomResource, Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[kube(
-    group = "pilotis.io",
+    group = "krust.io",
     version = "v1",
     kind = "AIResource",
     namespaced,
