@@ -1,4 +1,5 @@
 pub mod k8s;
+pub mod template;
 
 use crate::agent::tool::Tool;
 
