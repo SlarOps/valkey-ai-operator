@@ -40,4 +40,15 @@ impl EventChannelRegistry {
         let key = format!("{}/{}", namespace, name);
         self.channels.contains_key(&key)
     }
+
+    /// Non-blocking send. Returns true if the event was queued, false if the channel is full or
+    /// does not exist. Use this when you cannot hold the lock across an `.await`.
+    pub fn try_send(&self, namespace: &str, name: &str, event: ResourceEvent) -> bool {
+        let key = format!("{}/{}", namespace, name);
+        if let Some(tx) = self.channels.get(&key) {
+            tx.try_send(event).is_ok()
+        } else {
+            false
+        }
+    }
 }
