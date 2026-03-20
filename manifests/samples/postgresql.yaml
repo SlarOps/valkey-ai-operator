@@ -1,0 +1,16 @@
+apiVersion: pilotis.io/v1
+kind: AIResource
+metadata:
+  name: my-pg
+spec:
+  skill: postgresql
+  goal: "Run PostgreSQL 16 with 1 primary and 2 read replicas, 2Gi memory"
+  image: postgres:16
+  resources:
+    limits:
+      memory: "2Gi"
+      cpu: "1"
+  agent:
+    provider: vertex
+    region: us-east5
+    project_id: my-project

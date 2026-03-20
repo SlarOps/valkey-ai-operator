@@ -7,5 +7,5 @@ RUN cargo build --release
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/release/valkey-ai-operator /usr/local/bin/
-ENTRYPOINT ["valkey-ai-operator"]
+COPY --from=builder /app/target/release/pilotis-operator /usr/local/bin/
+ENTRYPOINT ["pilotis-operator"]

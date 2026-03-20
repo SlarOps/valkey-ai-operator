@@ -1,27 +1,27 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: valkey-ai-operator
-  namespace: valkey-system
+  name: pilotis-operator
+  namespace: pilotis-system
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: valkey-ai-operator
+      app: pilotis-operator
   template:
     metadata:
       labels:
-        app: valkey-ai-operator
+        app: pilotis-operator
     spec:
-      serviceAccountName: valkey-ai-operator
+      serviceAccountName: pilotis-operator
       containers:
-        - name: operator
-          image: valkey-ai-operator:latest
+        - name: pilotis-operator
+          image: pilotis-operator:latest
           env:
             - name: RUST_LOG
-              value: "valkey_ai_operator=info"
-            - name: WATCH_NAMESPACE
-              value: "default"
+              value: "info,pilotis_operator=debug"
+            - name: SKILLS_DIR
+              value: "/skills"
           resources:
             requests:
               memory: "128Mi"
@@ -29,3 +29,12 @@ spec:
             limits:
               memory: "256Mi"
               cpu: "500m"
+          volumeMounts:
+            - name: skills
+              mountPath: /skills
+              readOnly: true
+      volumes:
+        - name: skills
+          configMap:
+            name: pilotis-skills
+            optional: true

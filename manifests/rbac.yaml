@@ -1,19 +1,19 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: valkey-ai-operator
-  namespace: valkey-system
+  name: pilotis-operator
+  namespace: pilotis-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: valkey-ai-operator
+  name: pilotis-operator
 rules:
-  - apiGroups: ["valkey.krust.io"]
-    resources: ["valkeyclusters"]
+  - apiGroups: ["pilotis.io"]
+    resources: ["airesources"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["valkey.krust.io"]
-    resources: ["valkeyclusters/status"]
+  - apiGroups: ["pilotis.io"]
+    resources: ["airesources/status"]
     verbs: ["get", "update", "patch"]
   - apiGroups: ["apps"]
     resources: ["statefulsets"]
@@ -24,6 +24,9 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
@@ -37,12 +40,12 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: valkey-ai-operator
+  name: pilotis-operator
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: valkey-ai-operator
+  name: pilotis-operator
 subjects:
   - kind: ServiceAccount
-    name: valkey-ai-operator
-    namespace: valkey-system
+    name: pilotis-operator
+    namespace: pilotis-system

@@ -1,46 +1,63 @@
+warning: unused import: `warn`
+ --> src/agent/agent.rs:3:28
+  |
+3 | use tracing::{info, debug, warn};
+  |                            ^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `resource_name` is never read
+  --> src/tools/runtime.rs:25:5
+   |
+21 | pub struct RunAction {
+   |            --------- field in this struct
+...
+25 |     resource_name: String,
+   |     ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `pilotis-operator` (lib) generated 2 warnings (run `cargo fix --lib -p pilotis-operator` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.54s
+     Running `target/debug/gen_crd`
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: valkeyclusters.valkey.krust.io
+  name: airesources.pilotis.io
 spec:
-  group: valkey.krust.io
+  group: pilotis.io
   names:
     categories: []
-    kind: ValkeyCluster
-    plural: valkeyclusters
+    kind: AIResource
+    plural: airesources
     shortNames: []
-    singular: valkeycluster
+    singular: airesource
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .spec.masters
-      name: Masters
-      type: integer
-    - jsonPath: .status.readyNodes
-      name: Ready
-      type: integer
-    name: v1alpha1
+    - jsonPath: .spec.skill
+      name: Skill
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1
     schema:
       openAPIV3Schema:
-        description: Auto-generated derived type for ValkeyClusterSpec via `CustomResource`
+        description: Auto-generated derived type for AIResourceSpec via `CustomResource`
         properties:
           spec:
-            description: Desired state of a ValkeyCluster.
+            description: Desired state of an AIResource.
             properties:
               agent:
-                default:
-                  enabled: false
-                  health_check_interval: 30
-                  max_memory_scale_factor: 2.0
-                  provider: vertex
-                  self_healing: false
                 description: AI agent configuration.
+                nullable: true
                 properties:
                   api_key_secret_ref:
-                    description: Reference to a secret containing the agent's API key (required for anthropic provider).
+                    description: Reference to a secret containing the agent's API key.
                     nullable: true
                     properties:
                       key:
@@ -54,55 +71,69 @@ spec:
                     - name
                     type: object
                   enabled:
-                    default: false
+                    default: true
                     description: Whether the agent is enabled.
                     type: boolean
-                  health_check_interval:
+                  llm_call_timeout:
+                    default: 60s
+                    description: Timeout for a single LLM call (e.g. "60s").
+                    type: string
+                  max_iterations:
                     default: 30
-                    description: Interval in seconds between health checks.
+                    description: Maximum number of agent iterations per reconciliation loop.
                     format: uint32
                     minimum: 0.0
                     type: integer
-                  max_memory_scale_factor:
-                    default: 2.0
-                    description: Factor by which the agent may scale memory limits.
-                    format: double
-                    type: number
+                  model:
+                    description: Model name/ID override.
+                    nullable: true
+                    type: string
+                  pipeline_timeout:
+                    default: 300s
+                    description: Total timeout for a single agent pipeline run (e.g. "300s").
+                    type: string
                   project_id:
-                    description: GCP project ID for Vertex AI.
+                    description: Cloud project ID (e.g. for Vertex AI).
                     nullable: true
                     type: string
                   provider:
-                    default: vertex
-                    description: 'LLM provider: "vertex" (default) or "anthropic".'
+                    default: anthropic
+                    description: LLM provider (e.g. "anthropic", "vertex").
                     type: string
                   region:
-                    description: GCP region for Vertex AI (e.g. "us-central1").
+                    description: Cloud region for the provider (e.g. "us-central1").
                     nullable: true
                     type: string
-                  self_healing:
-                    default: false
-                    description: Whether the agent should perform self-healing actions.
-                    type: boolean
+                type: object
+              goal:
+                description: High-level goal the agent should achieve.
+                type: string
+              guardrails:
+                description: Guardrails that constrain agent actions.
+                nullable: true
+                properties:
+                  denied_commands:
+                    description: Shell commands the agent is not allowed to execute.
+                    items:
+                      type: string
+                    type: array
+                  max_memory:
+                    description: Maximum memory the agent may allocate (e.g. "4Gi").
+                    nullable: true
+                    type: string
+                  max_replicas:
+                    description: Maximum number of replicas the agent may create.
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
                 type: object
               image:
-                description: Override the default container image.
-                nullable: true
+                description: Container image to run.
                 type: string
-              masters:
-                description: Number of master nodes.
-                format: uint32
-                minimum: 0.0
-                type: integer
-              replicas_per_master:
-                default: 0
-                description: Number of replicas per master.
-                format: uint32
-                minimum: 0.0
-                type: integer
               resources:
-                default: {}
-                description: Resource requirements for each Valkey pod.
+                description: CPU/memory resource requirements for the workload pod.
+                nullable: true
                 properties:
                   limits:
                     description: CPU/memory resource specification.
@@ -131,35 +162,40 @@ spec:
                         type: string
                     type: object
                 type: object
-              version:
-                description: Valkey version to deploy (e.g. "7.2").
+              skill:
+                description: The skill (capability) this resource exercises (e.g. "valkey-cluster").
                 type: string
             required:
-            - masters
-            - version
+            - goal
+            - image
+            - skill
             type: object
           status:
-            description: Observed state of a ValkeyCluster.
+            description: Observed state of an AIResource.
             nullable: true
             properties:
-              cluster_state:
-                description: Detailed cluster state string reported by Valkey.
-                nullable: true
-                type: string
               conditions:
-                description: List of conditions on this cluster.
+                description: List of conditions on this resource.
                 items:
-                  description: A single condition on the ValkeyCluster.
+                  description: A single condition on the AIResource.
                   properties:
-                    condition_type:
-                      description: Type of the condition (e.g. "Ready", "Healing").
+                    message:
+                      description: Human-readable message about the condition.
+                      nullable: true
+                      type: string
+                    reason:
+                      description: Machine-readable reason for the condition.
+                      nullable: true
                       type: string
                     status:
                       description: Status of the condition ("True", "False", "Unknown").
                       type: string
+                    type:
+                      description: Type of the condition (e.g. "Ready", "Healing").
+                      type: string
                   required:
-                  - condition_type
                   - status
+                  - type
                   type: object
                 type: array
               last_agent_action:
@@ -167,19 +203,18 @@ spec:
                 nullable: true
                 type: string
               last_agent_action_time:
-                description: Timestamp of the last agent action.
+                description: Timestamp of the last agent action (RFC 3339).
                 nullable: true
                 type: string
-              last_health_check:
-                description: Timestamp of the last health check.
+              message:
+                description: Human-readable status message.
                 nullable: true
                 type: string
-              masters:
-                description: Number of master nodes currently recognised.
-                format: uint32
-                minimum: 0.0
+              monitor_state:
+                additionalProperties: true
+                description: Arbitrary key-value state reported by the agent's monitor.
                 nullable: true
-                type: integer
+                type: object
               phase:
                 description: High-level lifecycle phase.
                 enum:
@@ -190,16 +225,10 @@ spec:
                 - Failed
                 nullable: true
                 type: string
-              ready_nodes:
-                description: Number of pods that are ready.
-                format: uint32
-                minimum: 0.0
-                nullable: true
-                type: integer
             type: object
         required:
         - spec
-        title: ValkeyCluster
+        title: AIResource
         type: object
     served: true
     storage: true
