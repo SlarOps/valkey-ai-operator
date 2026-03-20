@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${name}
+  namespace: ${namespace}
+  labels:
+    app: ${name}
+spec:
+  serviceName: ${name}-headless
+  replicas: ${replicas}
+  selector:
+    matchLabels:
+      app: ${name}
+  template:
+    metadata:
+      labels:
+        app: ${name}
+    spec:
+      containers:
+        - name: postgres
+          image: ${image}
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_PASSWORD
+              value: "${postgres_password:postgres}"
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          resources:
+            limits:
+              memory: ${memory_limit:1Gi}
+              cpu: ${cpu_limit:1}
+            requests:
+              memory: ${memory_request:512Mi}
+              cpu: ${cpu_request:250m}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: ${storage:10Gi}
