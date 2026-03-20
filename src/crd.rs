@@ -54,9 +54,6 @@ pub struct AgentSpec {
     /// Maximum number of agent iterations per reconciliation loop.
     #[serde(default = "default_max_iterations")]
     pub max_iterations: u32,
-    /// Maximum scale factor for memory adjustments (legacy field).
-    #[serde(default = "default_max_memory_scale_factor")]
-    pub max_memory_scale_factor: f64,
     /// Total timeout for a single agent pipeline run (e.g. "300s").
     #[serde(default = "default_pipeline_timeout")]
     pub pipeline_timeout: String,
@@ -88,10 +85,6 @@ fn default_llm_call_timeout() -> String {
     "60s".into()
 }
 
-fn default_max_memory_scale_factor() -> f64 {
-    2.0
-}
-
 impl Default for AgentSpec {
     fn default() -> Self {
         Self {
@@ -101,7 +94,6 @@ impl Default for AgentSpec {
             project_id: None,
             model: None,
             max_iterations: default_max_iterations(),
-            max_memory_scale_factor: default_max_memory_scale_factor(),
             pipeline_timeout: default_pipeline_timeout(),
             llm_call_timeout: default_llm_call_timeout(),
             api_key_secret_ref: None,
@@ -195,88 +187,6 @@ pub struct ResourceCondition {
     /// Human-readable message about the condition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-}
-
-// ---------------------------------------------------------------------------
-// Backward-compat types (pre-AIResource refactor)
-// These allow legacy modules to compile until they are updated.
-// ---------------------------------------------------------------------------
-
-/// Legacy alias: ClusterPhase → ResourcePhase
-pub type ClusterPhase = ResourcePhase;
-
-/// Legacy condition type (subset of ResourceCondition, no optional fields).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct ClusterCondition {
-    #[serde(rename = "type")]
-    pub condition_type: String,
-    pub status: String,
-}
-
-/// Legacy spec for a Valkey cluster (pre-AIResource refactor).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct ValkeyClusterSpec {
-    /// Container image to run (e.g. "valkey/valkey:8.0").
-    pub image: String,
-    /// Number of master nodes.
-    pub masters: u32,
-    /// Number of replicas per master.
-    pub replicas_per_master: u32,
-    /// CPU/memory resources for the workload.
-    #[serde(default)]
-    pub resources: ResourceRequirements,
-    /// AI agent configuration.
-    #[serde(default)]
-    pub agent: AgentSpec,
-    /// Guardrails that constrain agent actions.
-    #[serde(default)]
-    pub guardrails: GuardrailSpec,
-}
-
-impl ValkeyClusterSpec {
-    /// Total number of pods (masters + replicas).
-    pub fn total_pods(&self) -> u32 {
-        self.masters * (1 + self.replicas_per_master)
-    }
-
-    /// Container image accessor (for backwards-compat call sites that used image()).
-    pub fn image(&self) -> &str {
-        &self.image
-    }
-}
-
-/// Legacy ValkeyCluster CRD status.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
-pub struct ValkeyClusterStatus {
-    pub phase: Option<ResourcePhase>,
-    pub message: Option<String>,
-    pub last_agent_action: Option<String>,
-    pub last_agent_action_time: Option<String>,
-    #[serde(default)]
-    pub conditions: Vec<ClusterCondition>,
-    pub ready_nodes: Option<u32>,
-    pub masters: Option<u32>,
-}
-
-/// Legacy ValkeyCluster CRD (pre-AIResource refactor).
-#[derive(CustomResource, Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-#[kube(
-    group = "valkey.krust.io",
-    version = "v1alpha1",
-    kind = "ValkeyCluster",
-    namespaced,
-    status = "ValkeyClusterStatus"
-)]
-pub struct ValkeyClusterCrdSpec {
-    #[serde(flatten)]
-    pub inner: ValkeyClusterSpec,
-}
-
-impl std::ops::Deref for ValkeyClusterCrdSpec {
-    type Target = ValkeyClusterSpec;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
 }
 
 /// Observed state of an AIResource.

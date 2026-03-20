@@ -1,93 +1,62 @@
-use crate::crd::{ClusterPhase, ValkeyCluster};
-use kube::api::{Api, Patch, PatchParams};
+use crate::crd::{AIResource, AIResourceStatus, ResourcePhase, ResourceCondition};
+use kube::{Api, Client};
+use kube::api::Patch;
+use anyhow::Result;
 use serde_json::json;
 
-/// Update the phase field on a ValkeyCluster status subresource.
 pub async fn update_phase(
-    api: &Api<ValkeyCluster>,
+    client: &Client,
     name: &str,
-    phase: ClusterPhase,
-) -> anyhow::Result<()> {
-    let patch = json!({
+    namespace: &str,
+    phase: ResourcePhase,
+    message: Option<&str>,
+) -> Result<()> {
+    let api: Api<AIResource> = Api::namespaced(client.clone(), namespace);
+    let status = json!({
         "status": {
-            "phase": phase
+            "phase": phase,
+            "message": message,
         }
     });
-    api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
-        .await?;
+    api.patch_status(name, &Default::default(), &Patch::Merge(&status)).await?;
     Ok(())
 }
 
-/// Update the last agent action and timestamp on a ValkeyCluster status subresource.
 pub async fn update_agent_action(
-    api: &Api<ValkeyCluster>,
+    client: &Client,
     name: &str,
+    namespace: &str,
     action: &str,
-) -> anyhow::Result<()> {
+) -> Result<()> {
+    let api: Api<AIResource> = Api::namespaced(client.clone(), namespace);
     let now = chrono::Utc::now().to_rfc3339();
-    let patch = json!({
+    let status = json!({
         "status": {
             "last_agent_action": action,
-            "last_agent_action_time": now
+            "last_agent_action_time": now,
         }
     });
-    api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
-        .await?;
+    api.patch_status(name, &Default::default(), &Patch::Merge(&status)).await?;
     Ok(())
 }
 
-/// Update or insert a condition on a ValkeyCluster status subresource.
 pub async fn update_condition(
-    api: &Api<ValkeyCluster>,
+    client: &Client,
     name: &str,
-    condition_type: &str,
-    status_val: &str,
-) -> anyhow::Result<()> {
-    // Fetch the current resource to update conditions properly.
-    let cluster = api.get(name).await?;
-    let mut conditions = cluster
-        .status
-        .as_ref()
-        .map(|s| s.conditions.clone())
-        .unwrap_or_default();
-
-    // Update existing or add new condition.
-    if let Some(cond) = conditions
-        .iter_mut()
-        .find(|c| c.condition_type == condition_type)
-    {
-        cond.status = status_val.to_string();
-    } else {
-        conditions.push(crate::crd::ClusterCondition {
-            condition_type: condition_type.to_string(),
-            status: status_val.to_string(),
-        });
-    }
-
-    let patch = json!({
+    namespace: &str,
+    condition: ResourceCondition,
+) -> Result<()> {
+    let api: Api<AIResource> = Api::namespaced(client.clone(), namespace);
+    let status = json!({
         "status": {
-            "conditions": conditions
+            "conditions": [condition],
         }
     });
-    api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
-        .await?;
+    api.patch_status(name, &Default::default(), &Patch::Merge(&status)).await?;
     Ok(())
 }
 
-/// Update the ready nodes and masters count on a ValkeyCluster status subresource.
-pub async fn update_ready_nodes(
-    api: &Api<ValkeyCluster>,
-    name: &str,
-    ready: u32,
-    masters: u32,
-) -> anyhow::Result<()> {
-    let patch = json!({
-        "status": {
-            "readyNodes": ready,
-            "masters": masters
-        }
-    });
-    api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
-        .await?;
-    Ok(())
-}
+// Suppress unused import warning — AIResourceStatus kept for future use
+const _: fn() = || {
+    let _: Option<AIResourceStatus> = None;
+};

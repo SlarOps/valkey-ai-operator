@@ -655,38 +655,12 @@ impl Tool for UpdateClusterStatus {
         let ready_nodes = args["ready_nodes"].as_u64().unwrap_or(0) as u32;
         let masters = args["masters"].as_u64().unwrap_or(0) as u32;
 
-        let api: Api<crate::crd::ValkeyCluster> = Api::namespaced((*self.client).clone(), &self.namespace);
-
-        let status_patch = json!({
-            "status": {
-                "phase": phase_str,
-                "cluster_state": cluster_state,
-                "ready_nodes": ready_nodes,
-                "masters": masters,
-            }
-        });
-
-        let pp = PatchParams::default();
-        match api.patch_status(&self.cluster_name, &pp, &Patch::Merge(&status_patch)).await {
-            Ok(_) => {
-                info!(
-                    cluster = %self.cluster_name,
-                    phase = phase_str,
-                    cluster_state = cluster_state,
-                    ready_nodes = ready_nodes,
-                    masters = masters,
-                    "Cluster status updated by agent"
-                );
-                ToolResult {
-                    success: true,
-                    output: format!("Status updated: phase={}, cluster_state={}, ready_nodes={}, masters={}",
-                        phase_str, cluster_state, ready_nodes, masters),
-                }
-            }
-            Err(e) => ToolResult {
-                success: false,
-                output: format!("Failed to update status: {}", e),
-            },
+        // TODO(Phase 3): migrate to AIResource CRD — ValkeyCluster removed
+        let _ = (phase_str, cluster_state, ready_nodes, masters);
+        let _ = &self.cluster_name;
+        ToolResult {
+            success: false,
+            output: "update_cluster_status: not implemented (pending Phase 3 migration)".into(),
         }
     }
 }
