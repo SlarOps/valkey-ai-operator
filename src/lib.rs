@@ -3,6 +3,7 @@ pub mod channel;
 pub mod controller;
 pub mod crd;
 pub mod monitor;
+pub mod pipeline;
 pub mod skill;
 pub mod tools;
 pub mod types;

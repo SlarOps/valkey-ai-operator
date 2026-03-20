@@ -1,0 +1,129 @@
+pub mod planner;
+pub mod simulator;
+pub mod executor;
+pub mod verifier;
+
+use crate::skill::types::{LoadedSkill, RiskLevel};
+use crate::types::StateSnapshot;
+use crate::agent::provider::Provider;
+use crate::crd::GuardrailSpec;
+use crate::monitor::registry::MonitorRegistry;
+use anyhow::Result;
+use std::sync::{Arc, Mutex};
+use kube::Client;
+use tracing::{info, warn};
+
+pub struct PipelineConfig {
+    pub pipeline_timeout_secs: u64,
+    pub agent_timeout_secs: u64,
+    pub llm_call_timeout_secs: u64,
+    pub max_iterations: u32,
+    pub model: String,
+}
+
+impl Default for PipelineConfig {
+    fn default() -> Self {
+        Self {
+            pipeline_timeout_secs: 300,
+            agent_timeout_secs: 120,
+            llm_call_timeout_secs: 60,
+            max_iterations: 30,
+            model: "claude-haiku-4-5-20251001".to_string(),
+        }
+    }
+}
+
+pub enum PipelineResult {
+    Success { actions_taken: Vec<String> },
+    Failed { reason: String, partial_actions: Vec<String> },
+    SimulatorRejected { reason: String },
+    Timeout,
+}
+
+/// Run the multi-agent pipeline for a given event
+pub async fn run_pipeline(
+    snapshot: &StateSnapshot,
+    skill: &LoadedSkill,
+    risk: RiskLevel,
+    provider: Arc<dyn Provider>,
+    client: Client,
+    config: &PipelineConfig,
+    monitor_registry: Arc<Mutex<MonitorRegistry>>,
+    guardrails: Option<GuardrailSpec>,
+) -> Result<PipelineResult> {
+    let timeout = tokio::time::Duration::from_secs(config.pipeline_timeout_secs);
+
+    let result = tokio::time::timeout(timeout, async {
+        match risk {
+            RiskLevel::Low => {
+                info!("Pipeline: low risk → Executor (autonomous) → Verifier");
+                let exec_result = executor::run_autonomous(
+                    snapshot, skill, provider.clone(), client.clone(), config,
+                    monitor_registry.clone(), guardrails.clone(),
+                ).await?;
+
+                let _verified = verifier::run(
+                    snapshot, skill, provider.clone(), client.clone(), config,
+                    monitor_registry.clone(), guardrails.clone(),
+                ).await?;
+
+                Ok(exec_result)
+            }
+            RiskLevel::Medium => {
+                info!("Pipeline: medium risk → Planner → Executor (plan) → Verifier");
+                let plan = planner::run(
+                    snapshot, skill, provider.clone(), client.clone(), config,
+                    monitor_registry.clone(), guardrails.clone(),
+                ).await?;
+
+                let exec_result = executor::run_plan(
+                    &plan, snapshot, skill, provider.clone(), client.clone(), config,
+                    monitor_registry.clone(), guardrails.clone(),
+                ).await?;
+
+                let _verified = verifier::run(
+                    snapshot, skill, provider.clone(), client.clone(), config,
+                    monitor_registry.clone(), guardrails.clone(),
+                ).await?;
+
+                Ok(exec_result)
+            }
+            RiskLevel::High => {
+                info!("Pipeline: high risk → Planner → Simulator → Executor (plan) → Verifier");
+                let plan = planner::run(
+                    snapshot, skill, provider.clone(), client.clone(), config,
+                    monitor_registry.clone(), guardrails.clone(),
+                ).await?;
+
+                let sim_result = simulator::run(
+                    &plan, snapshot, skill, provider.clone(), client.clone(), config,
+                    monitor_registry.clone(), guardrails.clone(),
+                ).await?;
+
+                if !sim_result.approved {
+                    return Ok(PipelineResult::SimulatorRejected { reason: sim_result.reason });
+                }
+
+                let exec_result = executor::run_plan(
+                    &plan, snapshot, skill, provider.clone(), client.clone(), config,
+                    monitor_registry.clone(), guardrails.clone(),
+                ).await?;
+
+                let _verified = verifier::run(
+                    snapshot, skill, provider.clone(), client.clone(), config,
+                    monitor_registry.clone(), guardrails.clone(),
+                ).await?;
+
+                Ok(exec_result)
+            }
+        }
+    }).await;
+
+    match result {
+        Ok(inner) => inner,
+        Err(_) => {
+            warn!("Pipeline timed out after {}s", config.pipeline_timeout_secs);
+            Ok(PipelineResult::Timeout)
+        }
+    }
+}
