@@ -28,8 +28,8 @@ pub async fn run_autonomous(
     let tools = tools::register_tools_for_role(
         "executor", client, Arc::new(skill.clone()),
         &snapshot.resource.name, &snapshot.resource.namespace,
-        &snapshot.resource.image, &snapshot.resource.goal,
-        monitor_registry, guardrails,
+        &snapshot.resource.uid, &snapshot.resource.image,
+        &snapshot.resource.goal, monitor_registry, guardrails,
     );
 
     let system_prompt = skill.agent_prompts.get("executor")
@@ -72,8 +72,8 @@ pub async fn run_plan(
     let tools = tools::register_tools_for_role(
         "executor", client, Arc::new(skill.clone()),
         &snapshot.resource.name, &snapshot.resource.namespace,
-        &snapshot.resource.image, &snapshot.resource.goal,
-        monitor_registry, guardrails,
+        &snapshot.resource.uid, &snapshot.resource.image,
+        &snapshot.resource.goal, monitor_registry, guardrails,
     );
 
     let system_prompt = format!(

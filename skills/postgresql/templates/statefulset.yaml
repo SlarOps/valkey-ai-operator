@@ -3,11 +3,9 @@ kind: StatefulSet
 metadata:
   name: ${name}
   namespace: ${namespace}
-  labels:
-    app: ${name}
 spec:
-  serviceName: ${name}-headless
-  replicas: ${replicas}
+  serviceName: ${name}
+  replicas: ${replicas:1}
   selector:
     matchLabels:
       app: ${name}
@@ -17,26 +15,48 @@ spec:
         app: ${name}
     spec:
       containers:
-        - name: postgres
+        - name: postgresql
           image: ${image}
           ports:
             - containerPort: 5432
               name: postgres
           env:
             - name: POSTGRES_PASSWORD
-              value: "${postgres_password:postgres}"
+              value: "postgres"
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
           resources:
             limits:
               memory: ${memory_limit:1Gi}
-              cpu: ${cpu_limit:1}
+              cpu: ${cpu_limit:500m}
             requests:
-              memory: ${memory_request:512Mi}
-              cpu: ${cpu_request:250m}
+              memory: ${memory_limit:1Gi}
+              cpu: "100m"
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+            - name: config
+              mountPath: /etc/postgresql/conf.d
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - postgres
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - postgres
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: ${name}-config
   volumeClaimTemplates:
     - metadata:
         name: data

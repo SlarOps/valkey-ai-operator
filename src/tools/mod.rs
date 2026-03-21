@@ -1,3 +1,4 @@
+pub mod desired_state;
 pub mod k8s;
 pub mod runtime;
 pub mod state;
@@ -18,6 +19,7 @@ pub fn register_tools_for_role(
     skill: Arc<LoadedSkill>,
     resource_name: &str,
     resource_namespace: &str,
+    resource_uid: &str,
     image: &str,
     goal: &str,
     monitor_registry: Arc<Mutex<MonitorRegistry>>,
@@ -30,26 +32,38 @@ pub fn register_tools_for_role(
 
     let mut tools: Vec<Box<dyn Tool>> = match role {
         "planner" | "simulator" => vec![
+            // Read-only tools for planning and simulation
             Box::new(state::GetState::new(
                 client.clone(), resource_namespace, resource_name,
                 &skill.config.name, goal, image, monitor_registry.clone(),
             )),
             Box::new(k8s::GetEvents::new(client.clone(), resource_namespace, resource_name)),
+            Box::new(k8s::KubectlDescribe::new(client.clone(), resource_namespace)),
+            Box::new(k8s::KubectlGet::new(client.clone(), resource_namespace)),
         ],
         "executor" => vec![
+            // Existing tools
             Box::new(runtime::RunAction::new(
                 client.clone(), skill.clone(), resource_namespace, resource_name, denied_commands.clone(),
             )),
             Box::new(runtime::ApplyTemplate::new(
-                client.clone(), skill.clone(), resource_namespace, resource_name, image,
+                client.clone(), skill.clone(), resource_namespace, resource_name, resource_uid, image,
             )),
             Box::new(state::GetState::new(
                 client.clone(), resource_namespace, resource_name,
                 &skill.config.name, goal, image, monitor_registry.clone(),
             )),
+            Box::new(state::UpdateStatus::new(client.clone(), resource_namespace, resource_name)),
             Box::new(k8s::GetPodLogs::new(client.clone(), resource_namespace)),
             Box::new(k8s::WaitForReady::new(client.clone(), resource_namespace, resource_name)),
             Box::new(k8s::GetEvents::new(client.clone(), resource_namespace, resource_name)),
+            // New read-only tools
+            Box::new(k8s::KubectlDescribe::new(client.clone(), resource_namespace)),
+            Box::new(k8s::KubectlGet::new(client.clone(), resource_namespace)),
+            // New mutation tools
+            Box::new(k8s::KubectlScale::new(client.clone(), resource_namespace, guardrails.clone())),
+            Box::new(k8s::KubectlPatch::new(client.clone(), resource_namespace, guardrails.clone())),
+            Box::new(k8s::KubectlExec::new(client.clone(), resource_namespace, denied_commands.clone())),
         ],
         "verifier" => vec![
             Box::new(state::GetState::new(
@@ -58,6 +72,10 @@ pub fn register_tools_for_role(
             )),
             Box::new(state::UpdateStatus::new(client.clone(), resource_namespace, resource_name)),
             Box::new(k8s::GetEvents::new(client.clone(), resource_namespace, resource_name)),
+            // New read-only tools for verification
+            Box::new(k8s::KubectlDescribe::new(client.clone(), resource_namespace)),
+            Box::new(k8s::KubectlGet::new(client.clone(), resource_namespace)),
+            Box::new(k8s::GetPodLogs::new(client.clone(), resource_namespace)),
         ],
         _ => vec![],
     };

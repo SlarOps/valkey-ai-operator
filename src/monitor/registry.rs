@@ -68,6 +68,11 @@ impl MonitorRegistry {
         state
     }
 
+    pub fn monitors_mut(&mut self, namespace: &str, name: &str) -> Option<&mut Vec<MonitorInstance>> {
+        let key = format!("{}/{}", namespace, name);
+        self.monitors.get_mut(&key)
+    }
+
     pub fn has_monitors(&self, namespace: &str, name: &str) -> bool {
         let key = format!("{}/{}", namespace, name);
         self.monitors.get(&key).map_or(false, |m| !m.is_empty())

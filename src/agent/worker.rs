@@ -80,7 +80,18 @@ impl AgentInstance {
 
     async fn handle_event(&mut self, event: ResourceEvent) {
         let snapshot = match &event {
-            ResourceEvent::Bootstrap(s) | ResourceEvent::MonitorTrigger(s) | ResourceEvent::SpecChange(s) => s.clone(),
+            ResourceEvent::Bootstrap(s)
+            | ResourceEvent::MonitorTrigger(s)
+            | ResourceEvent::SpecChange(s) => s.clone(),
+            ResourceEvent::DriftDetected(s, drift_info) => {
+                // Enrich snapshot with drift details so agent knows what's missing
+                let mut enriched = s.clone();
+                enriched.trigger.reason = format!(
+                    "Child resources missing: {}. Re-apply from desired state.",
+                    drift_info.missing_resources.join(", ")
+                );
+                enriched
+            }
             ResourceEvent::Shutdown => return,
         };
 
@@ -140,8 +151,9 @@ impl AgentInstance {
 
     fn determine_risk(&self, event: &ResourceEvent) -> RiskLevel {
         match event {
-            ResourceEvent::Bootstrap(_) => RiskLevel::High, // needs initialization
-            ResourceEvent::SpecChange(_) => RiskLevel::Medium, // likely scale/resource changes
+            ResourceEvent::Bootstrap(_) => RiskLevel::High,
+            ResourceEvent::SpecChange(_) => RiskLevel::Medium,
+            ResourceEvent::DriftDetected(_, _) => RiskLevel::Low, // re-apply from desired state, no planning needed
             ResourceEvent::MonitorTrigger(snapshot) => {
                 // Check which actions match the trigger, take max risk
                 let source = &snapshot.trigger.source;

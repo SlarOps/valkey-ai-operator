@@ -1,7 +1,7 @@
 ---
 name: valkey-cluster
 description: Manage Valkey cluster on Kubernetes. Handles creation, scaling, self-healing, and resource management for Valkey distributed clusters.
-allowed-tools: run_action, apply_template, get_state, update_status, get_pod_logs, wait_for_ready, get_events
+allowed-tools: run_action, apply_template, get_state, update_status, get_pod_logs, wait_for_ready, get_events, kubectl_describe, kubectl_get, kubectl_scale, kubectl_patch, kubectl_exec
 
 monitors:
   - name: cluster_state
@@ -35,6 +35,16 @@ actions:
     risk: low
     description: Check health of all nodes
     script: scripts/monitors/health_check.sh
+  - name: reshard
+    risk: high
+    description: Move all slots from one node to another (for scale-down)
+    script: scripts/reshard.sh
+    params: [from_node_id, to_node_id, cluster_ip]
+  - name: remove_node
+    risk: high
+    description: Remove an empty node from the cluster (must have no slots)
+    script: scripts/remove_node.sh
+    params: [node_id, cluster_ip]
   - name: get_config
     risk: low
     description: Get Valkey runtime config (maxmemory, cluster-enabled, memory usage)
@@ -120,8 +130,23 @@ From the goal, determine standalone or cluster mode:
 3. Run add_node action for each new pod
 4. Run rebalance action to redistribute slots
 
-## Scaling Down
-- NOT supported in v1. Do not reduce replicas below initial count.
+## Scaling Down (remove masters)
+Scale-down requires moving slots before removing nodes. Order matters — data loss if done wrong.
+
+1. Run `kubectl_exec` on a healthy pod: `valkey-cli CLUSTER NODES` to get node IDs and slot assignments
+2. Identify which masters to remove (highest ordinal pods, e.g., pod-4, pod-3 when scaling from 5 to 3)
+3. For each master being removed:
+   a. Get its node ID from CLUSTER NODES
+   b. Run `reshard` to move ALL its slots to a remaining master (distribute evenly)
+      - from_node_id: the node being removed
+      - to_node_id: a remaining master
+      - cluster_ip: any healthy node ip:port
+   c. Verify the node has 0 slots: `valkey-cli CLUSTER NODES | grep <node_id>`
+4. For each replica of removed masters: run `remove_node` (replica first, then master)
+5. For each empty master: run `remove_node`
+6. Scale down StatefulSet replicas to new count: masters + (masters × replicas_per_master)
+7. Run `rebalance` to even out slots across remaining masters
+8. Verify cluster_state=ok and all 16384 slots covered
 
 ## Spec Change Handling
 When spec changes (e.g., memory increase):
@@ -134,6 +159,16 @@ When spec changes (e.g., memory increase):
 ## Health Check
 - `valkey-cli PING` on each node → expect PONG
 - `CLUSTER INFO` → check cluster_state:ok, cluster_slots_ok:16384
+
+## Drift Healing
+When the trigger source is "drift" and reason mentions missing resources:
+1. The desired-state annotation on the AIResource contains the last-applied YAML for each template
+2. Re-apply the missing templates using `apply_template` with the same variables as the original deployment
+3. Use `get_state` to check current state and determine what variables to use
+4. After re-applying, verify the resource is healthy (pods Running/Ready)
+5. Update status accordingly
+
+This is a deterministic operation — just re-apply what was there before. No need to re-plan the deployment.
 
 ## Healing
 - **Pod crash**: K8s restarts automatically, Valkey auto-failover promotes replica

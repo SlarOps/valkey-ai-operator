@@ -24,11 +24,11 @@ pub struct PipelineConfig {
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
-            pipeline_timeout_secs: 300,
-            agent_timeout_secs: 120,
+            pipeline_timeout_secs: 600,
+            agent_timeout_secs: 300,
             llm_call_timeout_secs: 60,
-            max_iterations: 30,
-            model: "claude-haiku-4-5-20251001".to_string(),
+            max_iterations: 50,
+            model: "claude-sonnet-4-20250514".to_string(),
         }
     }
 }
