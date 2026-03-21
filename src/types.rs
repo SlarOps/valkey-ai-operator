@@ -34,6 +34,8 @@ pub struct PodInfo {
     pub phase: String,
     pub ready: bool,
     pub restarts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

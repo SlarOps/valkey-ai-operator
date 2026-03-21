@@ -90,31 +90,48 @@ pub async fn run_pipeline(
             }
             RiskLevel::High => {
                 info!("Pipeline: high risk → Planner → Simulator → Executor (plan) → Verifier");
-                let plan = planner::run(
-                    snapshot, skill, provider.clone(), client.clone(), config,
-                    monitor_registry.clone(), guardrails.clone(),
-                ).await?;
+                let max_retries = 2;
+                let mut last_rejection = String::new();
 
-                let sim_result = simulator::run(
-                    &plan, snapshot, skill, provider.clone(), client.clone(), config,
-                    monitor_registry.clone(), guardrails.clone(),
-                ).await?;
+                for attempt in 0..=max_retries {
+                    let plan = if attempt == 0 {
+                        planner::run(
+                            snapshot, skill, provider.clone(), client.clone(), config,
+                            monitor_registry.clone(), guardrails.clone(),
+                        ).await?
+                    } else {
+                        info!("Pipeline: re-planning (attempt {}/{}) with simulator feedback", attempt + 1, max_retries + 1);
+                        planner::run_with_feedback(
+                            snapshot, skill, provider.clone(), client.clone(), config,
+                            monitor_registry.clone(), guardrails.clone(),
+                            &last_rejection,
+                        ).await?
+                    };
 
-                if !sim_result.approved {
-                    return Ok(PipelineResult::SimulatorRejected { reason: sim_result.reason });
+                    let sim_result = simulator::run(
+                        &plan, snapshot, skill, provider.clone(), client.clone(), config,
+                        monitor_registry.clone(), guardrails.clone(),
+                    ).await?;
+
+                    if sim_result.approved {
+                        let exec_result = executor::run_plan(
+                            &plan, snapshot, skill, provider.clone(), client.clone(), config,
+                            monitor_registry.clone(), guardrails.clone(),
+                        ).await?;
+
+                        let _verified = verifier::run(
+                            snapshot, skill, provider.clone(), client.clone(), config,
+                            monitor_registry.clone(), guardrails.clone(),
+                        ).await?;
+
+                        return Ok(exec_result);
+                    }
+
+                    warn!("Simulator rejected plan (attempt {}): {}", attempt + 1, sim_result.reason);
+                    last_rejection = sim_result.reason;
                 }
 
-                let exec_result = executor::run_plan(
-                    &plan, snapshot, skill, provider.clone(), client.clone(), config,
-                    monitor_registry.clone(), guardrails.clone(),
-                ).await?;
-
-                let _verified = verifier::run(
-                    snapshot, skill, provider.clone(), client.clone(), config,
-                    monitor_registry.clone(), guardrails.clone(),
-                ).await?;
-
-                Ok(exec_result)
+                Ok(PipelineResult::SimulatorRejected { reason: last_rejection })
             }
         }
     }).await;

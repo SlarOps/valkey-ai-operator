@@ -89,7 +89,29 @@ pub async fn apply_server_side(
     match kind {
         "StatefulSet" => {
             let api: Api<StatefulSet> = Api::namespaced(client.clone(), namespace);
-            api.patch(name, &pp, &patch).await?;
+            let exists = api.get_opt(name).await?.is_some();
+            if exists {
+                // StatefulSet has many immutable fields (selector, serviceName, volumeClaimTemplates).
+                // On update, use strategic merge patch with only mutable fields.
+                let mut merge_patch = json!({
+                    "spec": {}
+                });
+                let spec = manifest.get("spec");
+                if let Some(replicas) = spec.and_then(|s| s.get("replicas")) {
+                    merge_patch["spec"]["replicas"] = replicas.clone();
+                }
+                if let Some(template) = spec.and_then(|s| s.get("template")) {
+                    merge_patch["spec"]["template"] = template.clone();
+                }
+                if let Some(update_strategy) = spec.and_then(|s| s.get("updateStrategy")) {
+                    merge_patch["spec"]["updateStrategy"] = update_strategy.clone();
+                }
+                let pp = PatchParams::default();
+                let patch = Patch::Strategic(&merge_patch);
+                api.patch(name, &pp, &patch).await?;
+            } else {
+                api.patch(name, &pp, &patch).await?;
+            }
         }
         "Service" => {
             let api: Api<Service> = Api::namespaced(client.clone(), namespace);

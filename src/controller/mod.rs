@@ -41,6 +41,7 @@ struct OperatorState {
     event_channels: Arc<Mutex<EventChannelRegistry>>,
     agent_handles: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     loaded_skills: Arc<Mutex<HashMap<String, Arc<LoadedSkill>>>>,
+    last_seen_specs: Arc<Mutex<HashMap<String, AIResourceSpec>>>,
 }
 
 pub async fn run(client: Client) {
@@ -58,6 +59,7 @@ pub async fn run(client: Client) {
         event_channels: event_channels.clone(),
         agent_handles: Arc::new(Mutex::new(HashMap::new())),
         loaded_skills: Arc::new(Mutex::new(HashMap::new())),
+        last_seen_specs: Arc::new(Mutex::new(HashMap::new())),
     });
 
     // Spawn monitor loop
@@ -105,18 +107,37 @@ async fn reconcile(
             Ok(_) => info!("Agent instance created for {}", key),
             Err(e) => {
                 error!("Failed to setup agent instance for {}: {}", key, e);
-                // Update status to Failed
                 let _ = status::update_phase(
                     &ctx.client, name, ns,
                     ResourcePhase::Failed,
                     Some(&format!("Setup failed: {}", e)),
                 ).await;
-                return Ok(Action::requeue(Duration::from_secs(60)));
+                return Ok(Action::requeue(Duration::from_secs(10)));
+            }
+        }
+        // Store initial spec
+        ctx.last_seen_specs.lock().unwrap().insert(key.clone(), spec.clone());
+    } else {
+        // Instance exists — check for spec changes
+        let spec_changed = {
+            let specs = ctx.last_seen_specs.lock().unwrap();
+            specs.get(&key).map(|old| old != spec).unwrap_or(true)
+        };
+
+        if spec_changed {
+            info!("Spec changed for {}, sending SpecChange event", key);
+            ctx.last_seen_specs.lock().unwrap().insert(key.clone(), spec.clone());
+
+            let snapshot = build_spec_change_snapshot(ns, name, spec, &ctx.client).await;
+            let sent = ctx.event_channels.lock().unwrap()
+                .try_send(ns, name, ResourceEvent::SpecChange(snapshot));
+            if !sent {
+                warn!("Failed to send SpecChange event for {} (channel full or missing)", key);
             }
         }
     }
 
-    Ok(Action::requeue(Duration::from_secs(60)))
+    Ok(Action::requeue(Duration::from_secs(10)))
 }
 
 fn error_policy(
@@ -168,7 +189,7 @@ async fn setup_agent_instance(
         pipeline_timeout_secs: parse_duration_secs(
             agent_spec.map(|a| a.pipeline_timeout.as_str()).unwrap_or("300s")
         ),
-        agent_timeout_secs: 120,
+        agent_timeout_secs: 300,
         llm_call_timeout_secs: parse_duration_secs(
             agent_spec.map(|a| a.llm_call_timeout.as_str()).unwrap_or("60s")
         ),
@@ -282,6 +303,34 @@ async fn build_bootstrap_snapshot(
     }
 }
 
+async fn build_spec_change_snapshot(
+    namespace: &str,
+    name: &str,
+    spec: &AIResourceSpec,
+    client: &Client,
+) -> StateSnapshot {
+    let k8s = query_k8s_state(client, namespace, name).await.unwrap_or_else(|_| {
+        K8sState { pods: vec![], statefulsets: vec![] }
+    });
+
+    StateSnapshot {
+        resource: ResourceInfo {
+            name: name.to_string(),
+            namespace: namespace.to_string(),
+            skill: spec.skill.clone(),
+            goal: spec.goal.clone(),
+            image: spec.image.clone(),
+        },
+        monitors: HashMap::new(),
+        k8s,
+        trigger: TriggerInfo {
+            source: "spec_change".to_string(),
+            reason: "AIResource spec updated".to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        },
+    }
+}
+
 async fn query_k8s_state(client: &Client, namespace: &str, name: &str) -> Result<K8sState> {
     let pods_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
     let sts_api: Api<StatefulSet> = Api::namespaced(client.clone(), namespace);
@@ -305,6 +354,7 @@ async fn query_k8s_state(client: &Client, namespace: &str, name: &str) -> Result
                 .and_then(|cs| cs.first())
                 .map(|c| c.restart_count as u32)
                 .unwrap_or(0),
+            ip: status.and_then(|s| s.pod_ip.clone()),
         }
     }).collect();
 

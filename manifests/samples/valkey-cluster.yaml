@@ -4,14 +4,14 @@ metadata:
   name: my-valkey
 spec:
   skill: valkey-cluster
-  goal: "Run a 3-master Valkey cluster with 1 replica each, 1Gi memory"
+  goal: "Run a Valkey instance, 1Gi memory"
   image: valkey/valkey:7
   resources:
     limits:
       memory: "1Gi"
       cpu: "500m"
   agent:
-    provider: anthropic
-    api_key_secret_ref:
-      name: anthropic-key
-      key: api-key
+    provider: vertex
+    project_id: your-gcp-project-id
+    region: us-east5
+    model: claude-haiku-4-5@20251001

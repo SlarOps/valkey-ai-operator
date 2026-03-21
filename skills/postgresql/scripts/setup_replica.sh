@@ -1,8 +1,8 @@
 #!/bin/bash
-# Args: $1 = primary_host, $2 = replication_user (default: replicator), $3 = replication_password (default: replpass)
-PRIMARY_HOST="$1"
-REP_USER="${2:-replicator}"
-REP_PASS="${3:-replpass}"
+# Env vars: PRIMARY_HOST (required), REPLICATION_USER (default: replicator), REPLICATION_PASSWORD (default: replpass)
+PRIMARY_HOST="${PRIMARY_HOST:?PRIMARY_HOST is required}"
+REP_USER="${REPLICATION_USER:-replicator}"
+REP_PASS="${REPLICATION_PASSWORD:-replpass}"
 
 # Stop PostgreSQL if running
 pg_ctl stop -D "$PGDATA" -m fast 2>/dev/null || true

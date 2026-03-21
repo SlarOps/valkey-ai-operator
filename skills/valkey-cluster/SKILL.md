@@ -35,6 +35,10 @@ actions:
     risk: low
     description: Check health of all nodes
     script: scripts/monitors/health_check.sh
+  - name: get_config
+    risk: low
+    description: Get Valkey runtime config (maxmemory, cluster-enabled, memory usage)
+    script: scripts/get_config.sh
 
 agents:
   planner:
@@ -56,14 +60,59 @@ Valkey is a distributed key-value store (Redis-compatible) running in cluster mo
 - Total pods = masters + (masters × replicas_per_master)
 - Each master owns a portion of the 16384 hash slots
 - Replicas automatically failover if their master fails
+- Minimum: 3 masters (required by Valkey cluster protocol)
 
-## Creating a New Cluster
-1. Apply statefulset.yaml template with total pod count
-2. Apply service.yaml template for headless service (pod discovery)
-3. Apply configmap.yaml template with cluster-enabled config
-4. Wait for all pods to be ready
-5. Run cluster_init action with all pod IPs and replicas_per_master
-6. Verify cluster_state=ok via monitors
+## Deployment Modes
+
+### Standalone (single instance)
+When goal says "a Valkey instance" or specifies 1 pod with no masters/replicas:
+- replicas = 1
+- cluster_enabled = **no** (IMPORTANT: must be "no" for standalone)
+- Do NOT run cluster_init
+- Skip cluster health checks
+
+### Cluster mode
+When goal mentions masters, replicas, or cluster:
+- Minimum 3 masters required by Valkey cluster protocol
+- replicas = masters + (masters × replicas_per_master)
+- cluster_enabled = yes (default)
+
+## Deployment Guide
+
+### Step 1: Determine Mode and Pod Count
+From the goal, determine standalone or cluster mode:
+- "a Valkey instance" / "single instance" → **standalone**: 1 pod, cluster_enabled=no
+- "N-master cluster with M replicas" → **cluster**: pods = N + (N × M), cluster_enabled=yes
+- Example: "3-master with 1 replica each" → cluster, 3 + (3 × 1) = 6 pods
+
+### Step 2: Apply Kubernetes Resources (in this order)
+1. **configmap.yaml** — configuration
+   - vars: `name`, `namespace`, `maxmemory`, `maxmemory_policy` (default: noeviction)
+   - vars: `cluster_enabled` — set to "no" for standalone, "yes" for cluster
+   - IMPORTANT: `maxmemory` must be in bytes (integer) or Valkey format (e.g. "1gb", "512mb"). Do NOT use Kubernetes format like "1Gi" or "512Mi". Conversion: 1Gi = 1073741824, 512Mi = 536870912, 2Gi = 2147483648
+2. **service.yaml** — headless service for pod discovery
+   - vars: `name`, `namespace`, `port` (default: 6379), `cluster_port` (default: 16379)
+3. **statefulset.yaml** — the pods
+   - vars: `name`, `namespace`, `image`, `replicas` (total pod count), `memory_limit`, `cpu_limit`, `storage`
+
+### Step 3: Wait for All Pods Ready
+- Use `wait_for_ready` with `expected_count` = total pods, `timeout_seconds` = 300
+- All pods must be Running and Ready before proceeding
+
+### Step 4: Initialize (cluster mode ONLY)
+**Skip this step entirely for standalone mode.**
+1. Call `get_state` to retrieve pod IPs
+2. Build comma-separated list: `IP1:6379,IP2:6379,...`
+3. IMPORTANT: Use actual pod IPs, NOT DNS names
+4. Run `cluster_init` action on any pod (e.g., pod-0)
+   - `pod_ips`: comma-separated `IP:PORT` list of ALL pods
+   - `replicas_per_master`: number from goal (e.g., 1)
+
+### Step 5: Verify
+- Run `get_config` to verify maxmemory matches goal
+- For standalone: check pod is Running and Ready, run health_check
+- For cluster: verify cluster_state=ok, cluster_slots_ok=16384
+- Update status to Running if healthy
 
 ## Scaling Up (add masters)
 1. Increase StatefulSet replicas
@@ -73,6 +122,14 @@ Valkey is a distributed key-value store (Redis-compatible) running in cluster mo
 
 ## Scaling Down
 - NOT supported in v1. Do not reduce replicas below initial count.
+
+## Spec Change Handling
+When spec changes (e.g., memory increase):
+1. Update configmap with new maxmemory value
+2. Re-apply statefulset with new resource limits
+3. Pods will rolling-restart automatically with new config
+4. Verify cluster_state=ok after restart completes
+- Do NOT re-run cluster_init on an existing cluster with data
 
 ## Health Check
 - `valkey-cli PING` on each node → expect PONG
@@ -84,7 +141,7 @@ Valkey is a distributed key-value store (Redis-compatible) running in cluster mo
 - **Slot migration stuck**: CLUSTER SETSLOT STABLE on affected slots
 
 ## Guardrails
-- cluster_init: ONLY when cluster is empty, NEVER on existing data with slots assigned
+- cluster_init: ONLY when cluster is empty (no slots assigned), NEVER on existing cluster with data
 - NEVER run: FLUSHALL, FLUSHDB, DEBUG, SHUTDOWN
 - CONFIG SET: only maxmemory is allowed
 - Always verify cluster_state before and after operations
@@ -92,3 +149,9 @@ Valkey is a distributed key-value store (Redis-compatible) running in cluster mo
 ## Port
 - Default Valkey port: 6379
 - Cluster bus port: 16379
+
+## Memory Format
+Valkey uses its own memory format, NOT Kubernetes format:
+- Valkey: `1gb`, `512mb`, `256mb` or bytes like `1073741824`
+- Kubernetes: `1Gi`, `512Mi` (use this ONLY for container resource limits, NOT for maxmemory)
+- When goal says "1Gi memory": use `1gb` for maxmemory config, `1Gi` for container resource limits

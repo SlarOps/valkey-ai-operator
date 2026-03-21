@@ -5,7 +5,7 @@ metadata:
   namespace: ${namespace}
 data:
   valkey.conf: |
-    cluster-enabled yes
+    cluster-enabled ${cluster_enabled:yes}
     cluster-config-file nodes.conf
     cluster-node-timeout 5000
     appendonly yes
@@ -13,3 +13,5 @@ data:
     port ${port:6379}
     bind 0.0.0.0
     protected-mode no
+    maxmemory ${maxmemory:0}
+    maxmemory-policy ${maxmemory_policy:noeviction}

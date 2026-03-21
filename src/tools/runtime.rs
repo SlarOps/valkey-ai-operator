@@ -14,6 +14,15 @@ use crate::skill::types::LoadedSkill;
 use crate::tools::k8s::apply_server_side;
 use crate::tools::template::render_template;
 
+/// Shell-escape a value for safe use in `KEY=VALUE` env var assignment.
+fn shell_escape(s: &str) -> String {
+    if s.chars().all(|c| c.is_alphanumeric() || ".-_/:@,".contains(c)) {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // RunAction — execute a skill-defined action script in a pod
 // ---------------------------------------------------------------------------
@@ -53,6 +62,21 @@ impl Tool for RunAction {
     }
 
     fn parameters_schema(&self) -> Value {
+        // Build per-action documentation from skill config
+        let actions_desc: Vec<String> = self.skill.config.actions.iter().map(|a| {
+            let params = if a.params.is_empty() {
+                "none".to_string()
+            } else {
+                a.params.join(", ")
+            };
+            let desc = a.description.as_deref().unwrap_or("");
+            format!("- {}: {} (params: {})", a.name, desc, params)
+        }).collect();
+        let args_description = format!(
+            "Key-value arguments passed as env vars. Available actions:\n{}",
+            actions_desc.join("\n")
+        );
+
         json!({
             "type": "object",
             "properties": {
@@ -62,7 +86,7 @@ impl Tool for RunAction {
                 },
                 "args": {
                     "type": "object",
-                    "description": "Key-value arguments passed to the action script as env vars"
+                    "description": args_description
                 },
                 "pod_name": {
                     "type": "string",
@@ -120,23 +144,28 @@ impl Tool for RunAction {
             },
         };
 
-        // Build command with optional env vars prepended
-        let mut env_parts: Vec<String> = Vec::new();
+        // Build script: export env vars then run script content
+        let mut script_lines: Vec<String> = Vec::new();
         if let Some(args_obj) = args["args"].as_object() {
             for (k, v) in args_obj {
-                if let Some(s) = v.as_str() {
-                    env_parts.push(format!("{}={}", k.to_uppercase(), s));
-                }
+                let val = if let Some(s) = v.as_str() {
+                    s.to_string()
+                } else if let Some(n) = v.as_i64() {
+                    n.to_string()
+                } else if let Some(n) = v.as_f64() {
+                    n.to_string()
+                } else if let Some(b) = v.as_bool() {
+                    b.to_string()
+                } else {
+                    continue;
+                };
+                script_lines.push(format!("export {}={}", k.to_uppercase(), shell_escape(&val)));
             }
         }
+        script_lines.push(script_content);
+        let full_script = script_lines.join("\n");
 
-        let mut full_script = env_parts.join(" ");
-        if !full_script.is_empty() {
-            full_script.push(' ');
-        }
-        full_script.push_str(&script_content);
-
-        let command = vec!["sh".to_string(), "-c".to_string(), full_script];
+        let command = vec!["bash".to_string(), "-c".to_string(), full_script];
 
         // Exec in pod via kube attach API
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
@@ -267,9 +296,18 @@ impl Tool for ApplyTemplate {
 
         if let Some(extra) = args["vars"].as_object() {
             for (k, v) in extra {
-                if let Some(s) = v.as_str() {
-                    vars.insert(k.clone(), s.to_string());
-                }
+                let val = if let Some(s) = v.as_str() {
+                    s.to_string()
+                } else if let Some(n) = v.as_i64() {
+                    n.to_string()
+                } else if let Some(n) = v.as_f64() {
+                    n.to_string()
+                } else if let Some(b) = v.as_bool() {
+                    b.to_string()
+                } else {
+                    continue;
+                };
+                vars.insert(k.clone(), val);
             }
         }
 

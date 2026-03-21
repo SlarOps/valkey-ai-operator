@@ -1,8 +1,8 @@
 #!/bin/bash
-# Args: $1=new_pod_ip:port, $2=existing_cluster_ip:port
+# Env vars: NEW_POD_IP (host:port), CLUSTER_IP (host:port)
 set -e
-NEW_NODE="$1"
-EXISTING="$2"
+NEW_NODE="${NEW_POD_IP:?NEW_POD_IP is required}"
+EXISTING="${CLUSTER_IP:?CLUSTER_IP is required}"
 echo "Adding node $NEW_NODE to cluster via $EXISTING"
 valkey-cli --cluster add-node $NEW_NODE $EXISTING
 echo "Node added. Cluster info:"

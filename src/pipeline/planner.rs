@@ -89,6 +89,50 @@ pub async fn run(
     parse_action_plan(&text, &snapshot.resource.goal)
 }
 
+pub async fn run_with_feedback(
+    snapshot: &StateSnapshot,
+    skill: &LoadedSkill,
+    provider: Arc<dyn Provider>,
+    client: Client,
+    config: &PipelineConfig,
+    monitor_registry: Arc<Mutex<MonitorRegistry>>,
+    guardrails: Option<GuardrailSpec>,
+    simulator_feedback: &str,
+) -> Result<ActionPlan> {
+    info!("Planner agent re-planning with simulator feedback");
+
+    let tools = tools::register_tools_for_role(
+        "planner", client, Arc::new(skill.clone()),
+        &snapshot.resource.name, &snapshot.resource.namespace,
+        &snapshot.resource.image, &snapshot.resource.goal,
+        monitor_registry, guardrails,
+    );
+
+    let system_prompt = skill.agent_prompts.get("planner")
+        .cloned()
+        .unwrap_or_else(|| default_planner_prompt());
+
+    let agent_config = AgentConfig {
+        model: config.model.clone(),
+        max_iterations: config.max_iterations.min(10),
+        temperature: 0.0,
+    };
+
+    let mut agent = AutonomousAgent::new(provider, tools, agent_config);
+
+    let user_message = format!(
+        "## Skill Knowledge\n{}\n\n## Current State\n{}\n\n## Previous Plan Rejected by Simulator\nThe simulator rejected your previous plan with this feedback:\n{}\n\nFix the issues and create a corrected action plan as JSON.",
+        skill.body, snapshot.to_agent_message(), simulator_feedback
+    );
+
+    let timeout = tokio::time::Duration::from_secs(config.agent_timeout_secs);
+    let result = tokio::time::timeout(timeout, agent.run(&user_message, &system_prompt)).await
+        .map_err(|_| anyhow!("Planner agent timed out"))??;
+
+    let text = result.text.unwrap_or_default();
+    parse_action_plan(&text, &snapshot.resource.goal)
+}
+
 fn parse_action_plan(text: &str, goal: &str) -> Result<ActionPlan> {
     // Try to find JSON in the response
     if let Some(start) = text.find('{') {

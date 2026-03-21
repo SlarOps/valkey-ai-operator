@@ -1,210 +1,227 @@
-# Valkey AI Operator
+# Krust Operator
 
 > **What if your Kubernetes operator could think?**
 
-A K8s operator where the reconciliation logic is not code — it's an AI agent. Give it a CRD, and it figures out the rest: creates the cluster, scales it, heals it, patches resources — all by reasoning about desired vs actual state.
+A generic AI-driven K8s operator where reconciliation logic is not code — it's an AI agent. Define a **skill** (what to manage), create an **AIResource** (what you want), and the agent figures out the rest: deploys, scales, heals, patches — all by reasoning about desired vs actual state.
 
 No giant `switch` statements. No 10,000-line controllers. Just: **"here's what you want, here's what exists — make it match."**
-
-![Agent recovering a corrupted Valkey cluster](docs/images/agent-cluster-recovery.png)
-*The agent autonomously recovers a corrupted Valkey cluster: diagnoses the failure, resets all 6 nodes with `CLUSTER RESET HARD`, reinitializes from scratch, verifies `cluster_state:ok`, and sets phase to Running — zero human intervention.*
-
-## The Idea
-
-Traditional K8s operators encode every possible scenario as code:
-
-```
-if no_statefulset → create
-if replicas_mismatch → scale
-if pod_crashed → restart
-if memory_changed → patch
-if cluster_state_fail → heal
-if scaling_up → add_node + rebalance
-... hundreds more conditions
-```
-
-This operator replaces all of that with:
-
-```
-1. Collect facts (desired vs actual)
-2. Send to AI agent
-3. Agent decides + executes
-```
-
-**17 lines of main.rs. Zero conditions. The agent handles everything.**
 
 ## How It Works
 
 ```
-K8s API Server
-      │
-      │  watches ValkeyCluster CRD
-      ▼
-┌─────────────────────┐
-│  Reconciler          │
-│                      │
-│  Every change:       │         ┌──────────────────────────┐
-│  1. Get CRD spec     │         │  AI Agent (Claude)       │
-│  2. Get StatefulSet   │  ───►  │                          │
-│  3. List Pods         │  State │  Receives:               │
-│  4. Exec CLUSTER INFO │  Snap  │  - Desired vs Actual     │
-│  5. Detect diff       │  shot  │  - What changed          │
-│                      │         │                          │
-│  NO decisions here   │         │  Decides autonomously:   │
-│  NO phase logic      │         │  - Create? Scale? Heal?  │
-│  Just facts.         │         │  - Execute tools         │
-└─────────────────────┘         │  - Update CRD status     │
-                                └──────────────────────────┘
+┌─────────────────┐     ┌──────────────────────────────────────────┐
+│  K8s API Server  │     │  Multi-Agent Pipeline                    │
+│                  │     │                                          │
+│  AIResource CR   │────►│  Planner ─► Simulator ─► Executor ─► Verifier │
+│  (goal + skill)  │     │                                          │
+│                  │◄────│  Tools: apply_template, run_action,      │
+│  StatefulSet,    │     │         get_state, update_status, ...    │
+│  Pods, Services  │     │                                          │
+└─────────────────┘     └──────────────────────────────────────────┘
 ```
 
-**The reconciler never decides what to do.** It builds a `StateSnapshot` and sends it to the agent. The agent is the sole decision maker.
-
-### What the agent sees
-
-```
-## Cluster 'my-valkey' — Trigger: memory_mismatch: sts=512Mi spec=1Gi
-
-### Desired: masters=3, replicas=1, memory=1Gi
-### Actual:  sts=6 pods, memory=512Mi, cluster_state=ok, slots=16384/16384
-
-### What Needs Attention
-- Memory limit mismatch: sts=512Mi, spec=1Gi
-```
-
-Agent reads this → calls `patch_resources` → verifies health → updates status. Done.
-
-## It Actually Works
-
-Tested on a real kind cluster with Vertex AI (Claude Haiku):
-
-| Scenario | Result |
-|----------|--------|
-| `kubectl apply` ValkeyCluster | Agent creates ConfigMap, Services, StatefulSet, runs `valkey-cli --cluster create` |
-| `kubectl delete pod my-valkey-1` | Valkey auto-failover, replica promotes to master, cluster stays `ok` |
-| `kubectl patch` masters 3 → 4 | Agent scales StatefulSet, adds nodes, rebalances slots |
-| `kubectl patch` memory 512Mi → 1Gi | Agent detects mismatch, JSON-patches StatefulSet |
-| Cluster state = `fail` | Agent runs `CLUSTER RESET HARD` on all pods, reinitializes from scratch |
-| Nothing changed | Agent skipped entirely (saves API cost) |
+1. **Controller** watches AIResource CRDs, collects facts (desired vs actual state)
+2. **Planner** agent creates an action plan based on goal + current state
+3. **Simulator** validates the plan for safety (high-risk operations only)
+4. **Executor** agent runs the plan using skill-defined tools
+5. **Verifier** agent confirms the result matches the goal
 
 ## Quick Start
 
 ```bash
-# Prerequisites: Rust 1.75+, a K8s cluster, gcloud auth application-default login
+# Prerequisites: Rust 1.75+, a K8s cluster (OrbStack, kind, etc.)
 
 # Install CRD
-cargo run --bin gen_crd > manifests/crd.yaml
 kubectl apply -f manifests/crd.yaml
 
-# Run operator
-RUST_LOG=valkey_ai_operator=info cargo run
+# Setup RBAC
+kubectl apply -f manifests/rbac.yaml
 
-# Create a Valkey cluster
-kubectl apply -f manifests/samples/valkeycluster.yaml
+# Run operator locally
+RUST_LOG=info,krust_operator=debug SKILLS_DIR=./skills cargo run --bin krust-operator
+
+# Create a Valkey instance
+kubectl apply -f manifests/samples/valkey-cluster.yaml
 
 # Watch the agent work
-kubectl get valkeycluster -w
+kubectl get airesource -w
 ```
+
+## Examples
+
+### Single Valkey Instance
+
+```yaml
+apiVersion: krust.io/v1
+kind: AIResource
+metadata:
+  name: my-valkey
+spec:
+  skill: valkey-cluster
+  goal: "Run a Valkey instance, 1Gi memory"
+  image: valkey/valkey:7
+  agent:
+    provider: vertex
+    project_id: your-gcp-project
+    region: us-east5
+```
+
+The agent will: create ConfigMap (standalone mode, no cluster), create Service, create StatefulSet with 1 pod, verify health, set status to Running.
+
+### 3-Master Valkey Cluster with Replicas
+
+```yaml
+apiVersion: krust.io/v1
+kind: AIResource
+metadata:
+  name: my-cluster
+spec:
+  skill: valkey-cluster
+  goal: "Run a 3-master Valkey cluster with 1 replica each, 2Gi memory"
+  image: valkey/valkey:7
+  resources:
+    limits:
+      memory: "2Gi"
+      cpu: "500m"
+  agent:
+    provider: vertex
+    project_id: your-gcp-project
+    region: us-east5
+    model: claude-haiku-4-5@20251001
+  guardrails:
+    max_replicas: 12
+    max_memory: "4Gi"
+    denied_commands: ["FLUSHALL", "FLUSHDB", "DEBUG", "SHUTDOWN"]
+```
+
+The agent will: calculate 6 pods needed, apply ConfigMap + Service + StatefulSet, wait for all pods ready, get pod IPs, run `cluster_init` with all 6 IPs, verify `cluster_state=ok` with 16384 slots assigned.
 
 ### Try Breaking Things
 
 ```bash
-# Scale
-kubectl patch valkeycluster my-valkey --type merge -p '{"spec":{"masters":4}}'
+# Scale up: change goal from 3-master to 4-master
+kubectl patch airesource my-cluster --type merge \
+  -p '{"spec":{"goal":"Run a 4-master Valkey cluster with 1 replica each, 2Gi memory"}}'
 
-# Change resources
-kubectl patch valkeycluster my-valkey --type merge -p '{"spec":{"resources":{"limits":{"memory":"256Mi"}}}}'
+# Change memory
+kubectl patch airesource my-cluster --type merge \
+  -p '{"spec":{"goal":"Run a 3-master Valkey cluster with 1 replica each, 4Gi memory"}}'
 
-# Kill a master
-kubectl delete pod my-valkey-1
+# Delete configmap — agent will recreate it
+kubectl delete configmap my-cluster-config
 
-# Watch the agent reason, diagnose, and fix — in real time
+# Kill a pod — Valkey auto-failover + agent verifies health
+kubectl delete pod my-cluster-1
 ```
 
-## Sample CRD
+## Skills
 
-```yaml
-apiVersion: valkey.krust.io/v1alpha1
-kind: ValkeyCluster
-metadata:
-  name: my-valkey
-spec:
-  version: "7"
-  masters: 3
-  replicas_per_master: 1
-  resources:
-    requests:
-      memory: "128Mi"
-      cpu: "100m"
-    limits:
-      memory: "256Mi"
-      cpu: "250m"
-  agent:
-    enabled: true
-    self_healing: true
-    provider: vertex           # or "anthropic"
-    region: us-east5
-    project_id: your-gcp-project-id
+Skills define **what** the operator can manage. Each skill is a directory with:
+
+```
+skills/valkey-cluster/
+├── SKILL.md              # Knowledge, actions, monitors, agent prompts
+├── scripts/
+│   ├── cluster_init.sh   # Initialize Valkey cluster
+│   ├── add_node.sh       # Add node to cluster
+│   ├── rebalance.sh      # Rebalance slots
+│   ├── get_config.sh     # Get runtime config
+│   └── monitors/
+│       ├── cluster_info.sh
+│       └── health_check.sh
+└── templates/
+    ├── statefulset.yaml   # K8s manifest templates
+    ├── service.yaml
+    └── configmap.yaml
 ```
 
-## Agent Tools (18)
+The agent reads `SKILL.md` for domain knowledge (how to deploy, scale, heal) and uses the defined actions and templates as tools. Adding a new skill (e.g., PostgreSQL, Kafka) requires no code changes — just a new skill directory.
 
-The agent has 18 tools — it picks whichever ones it needs:
+## Agent Tools
 
-| Category | Tools |
-|----------|-------|
-| **Create** | `create_configmap`, `create_service`, `create_statefulset` |
-| **Scale** | `scale_statefulset`, `cluster_add_node`, `cluster_rebalance` |
-| **Heal** | `restart_pod`, `cluster_init`, `valkey_cli` (CLUSTER RESET, MEET, etc.) |
-| **Observe** | `cluster_info`, `cluster_nodes`, `health_check`, `get_pod_status`, `get_pod_logs`, `get_events`, `wait_for_pods`, `pod_exec` |
-| **Update** | `patch_resources`, `update_cluster_status` |
+The agent gets tools based on the skill definition:
+
+| Tool | Description |
+|------|-------------|
+| `apply_template` | Render and apply a K8s manifest template |
+| `run_action` | Execute a skill-defined script in a pod |
+| `get_state` | Get current K8s state (pods, statefulsets, monitors) |
+| `update_status` | Update AIResource status (phase, message) |
+| `get_pod_logs` | Get pod logs (last 100 lines) |
+| `wait_for_ready` | Poll until expected pods are ready |
+| `get_events` | List K8s events for a resource |
 
 ## Safety
 
-The agent is powerful but constrained:
-
-- **Guardrails** — memory scaling capped at `maxMemoryScaleFactor`, cannot delete StatefulSet
-- **Circuit breaker** — 3 consecutive failures → `Failed` phase, stops retrying
-- **Command denylist** — FLUSHALL, FLUSHDB, DEBUG, SHUTDOWN blocked
-- **No-op detection** — agent only called when state actually changed
-- **Audit trail** — every action logged to CRD status + K8s Events
+- **Multi-agent pipeline** — Planner creates plan, Simulator validates safety, Executor runs, Verifier confirms
+- **Simulator retry** — rejected plans get re-planned with simulator feedback (up to 3 attempts)
+- **Circuit breaker** — 3 consecutive failures → stops retrying, enters Failed phase
+- **Guardrails** — max replicas, max memory, denied commands (configurable per AIResource)
+- **Risk levels** — Low (executor only), Medium (planner + executor), High (full pipeline with simulator)
+- **Spec change detection** — controller detects CR changes and sends events to running agents
 
 ## Project Structure
 
 ```
 src/
-├── main.rs              # 17 lines. Seriously.
-├── controller/mod.rs    # Reconciler: facts only, no decisions
-├── types.rs             # StateSnapshot — the bridge between K8s and AI
+├── main.rs              # Entry point
+├── controller/
+│   ├── mod.rs           # Reconciler: facts only, no decisions
+│   └── status.rs        # CRD status updates
 ├── agent/
-│   ├── worker.rs        # One system prompt. Receive snapshot. Run agent.
 │   ├── agent.rs         # Autonomous tool-calling loop
-│   └── provider.rs      # Vertex AI + Anthropic with exponential backoff
+│   ├── worker.rs        # Agent instance lifecycle + circuit breaker
+│   ├── provider.rs      # Vertex AI + Anthropic API
+│   ├── tool.rs          # Tool trait + safety levels
+│   └── types.rs         # Agent types
+├── pipeline/
+│   ├── mod.rs           # Multi-agent pipeline orchestration
+│   ├── planner.rs       # Plan generation agent
+│   ├── simulator.rs     # Plan validation agent
+│   ├── executor.rs      # Plan execution agent
+│   └── verifier.rs      # Result verification agent
+├── skill/
+│   ├── loader.rs        # SKILL.md parser (YAML frontmatter + markdown)
+│   ├── types.rs         # Skill config types
+│   └── trigger.rs       # Monitor trigger evaluation
 ├── tools/
-│   ├── k8s.rs           # 12 K8s tools with guardrails
-│   └── valkey.rs        # 7 Valkey tools (exec-based, works outside cluster)
-└── crd.rs               # ValkeyCluster CRD
+│   ├── k8s.rs           # K8s tools (pod status, logs, events, wait)
+│   ├── runtime.rs       # RunAction + ApplyTemplate
+│   ├── state.rs         # GetState + UpdateStatus
+│   └── template.rs      # Template variable rendering
+├── monitor/             # Monitor registry + runner
+├── channel.rs           # Per-resource event channels
+├── crd.rs               # AIResource CRD definition
+└── types.rs             # StateSnapshot, ResourceEvent, CircuitBreaker
 ```
 
-## Why This Matters
+## Configuration
 
-This isn't about Valkey. It's about the pattern:
+### AIResource Spec
 
-1. **Any CRD** can use this architecture — PostgreSQL, Kafka, Elasticsearch
-2. **Zero domain logic in the controller** — the AI brings the domain knowledge
-3. **Self-healing by reasoning**, not by matching known failure patterns
-4. **New failure modes don't need new code** — the agent figures them out
+| Field | Description | Required |
+|-------|-------------|----------|
+| `spec.skill` | Skill name (directory under SKILLS_DIR) | Yes |
+| `spec.goal` | Natural language goal for the agent | Yes |
+| `spec.image` | Container image to deploy | Yes |
+| `spec.agent.provider` | `anthropic` or `vertex` | No (default: anthropic) |
+| `spec.agent.model` | Model ID | No (default: claude-haiku-4-5-20251001) |
+| `spec.agent.project_id` | GCP project for Vertex AI | If provider=vertex |
+| `spec.agent.region` | GCP region | If provider=vertex |
+| `spec.guardrails` | Safety constraints | No |
 
-The operator that ships with 0 `if` statements for operations — because the AI already knows how databases work.
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SKILLS_DIR` | Path to skills directory | `/skills` |
+| `RUST_LOG` | Log level | `info` |
+| `ANTHROPIC_API_KEY` | API key (if provider=anthropic) | — |
 
 ## Built With
 
 - [kube-rs](https://github.com/kube-rs/kube) — Kubernetes controller runtime (Rust)
-- [Claude](https://docs.anthropic.com/en/docs/about-claude/models) via Vertex AI — the brain
-- Agent engine from [krust](https://github.com/vanchonlee/krust) (ZeroClaw pattern)
-
-## Status
-
-**Proof of concept.** It works. It's not production-ready. But it proves the idea: AI-driven operators are not just possible — they're simpler than the alternative.
+- [Claude](https://docs.anthropic.com/en/docs/about-claude/models) via Vertex AI or Anthropic API
 
 ## License
 

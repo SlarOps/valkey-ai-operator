@@ -88,7 +88,10 @@ impl Tool for GetState {
                     .and_then(|s| s.container_statuses.as_ref())
                     .map(|cs| cs.iter().map(|c| c.restart_count as u32).sum())
                     .unwrap_or(0);
-                PodInfo { name, phase, ready, restarts }
+                let ip = status
+                    .and_then(|s| s.pod_ip.as_ref())
+                    .cloned();
+                PodInfo { name, phase, ready, restarts, ip }
             }).collect::<Vec<_>>(),
             Err(e) => {
                 return ToolResult {
@@ -239,7 +242,7 @@ impl Tool for UpdateStatus {
             status_patch["status"]["message"] = json!(msg);
         }
 
-        let pp = PatchParams::apply("valkey-ai-operator").force();
+        let pp = PatchParams::default();
         let patch = Patch::Merge(&status_patch);
 
         match api.patch_status(&self.resource_name, &pp, &patch).await {
