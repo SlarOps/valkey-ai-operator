@@ -1,7 +1,7 @@
 ---
 name: valkey-cluster
 description: Manage Valkey cluster on Kubernetes. Handles creation, scaling, self-healing, and resource management for Valkey distributed clusters.
-allowed-tools: run_action, apply_template, get_state, update_status, get_pod_logs, wait_for_ready, get_events
+allowed-tools: run_action, apply_template, get_state, update_status, get_pod_logs, wait_for_ready, get_events, kubectl_describe, kubectl_get, kubectl_scale, kubectl_patch, kubectl_exec
 
 monitors:
   - name: cluster_state
@@ -134,6 +134,16 @@ When spec changes (e.g., memory increase):
 ## Health Check
 - `valkey-cli PING` on each node → expect PONG
 - `CLUSTER INFO` → check cluster_state:ok, cluster_slots_ok:16384
+
+## Drift Healing
+When the trigger source is "drift" and reason mentions missing resources:
+1. The desired-state annotation on the AIResource contains the last-applied YAML for each template
+2. Re-apply the missing templates using `apply_template` with the same variables as the original deployment
+3. Use `get_state` to check current state and determine what variables to use
+4. After re-applying, verify the resource is healthy (pods Running/Ready)
+5. Update status accordingly
+
+This is a deterministic operation — just re-apply what was there before. No need to re-plan the deployment.
 
 ## Healing
 - **Pod crash**: K8s restarts automatically, Valkey auto-failover promotes replica

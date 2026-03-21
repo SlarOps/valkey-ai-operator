@@ -15,6 +15,7 @@ pub struct StateSnapshot {
 pub struct ResourceInfo {
     pub name: String,
     pub namespace: String,
+    pub uid: String,
     pub skill: String,
     pub goal: String,
     pub image: String,
@@ -56,12 +57,19 @@ pub struct TriggerInfo {
     pub timestamp: String,
 }
 
+/// Info about detected drift in child resources
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriftInfo {
+    pub missing_resources: Vec<String>,
+}
+
 /// Events sent through per-resource channel
 #[derive(Debug, Clone)]
 pub enum ResourceEvent {
     Bootstrap(StateSnapshot),
     MonitorTrigger(StateSnapshot),
     SpecChange(StateSnapshot),
+    DriftDetected(StateSnapshot, DriftInfo),
     Shutdown,
 }
 

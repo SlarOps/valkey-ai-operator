@@ -1,40 +1,24 @@
 ---
 name: postgresql
-description: Manage PostgreSQL primary-replica setup on Kubernetes. Handles creation, replica setup, failover, and health monitoring.
-allowed-tools: run_action, apply_template, get_state, update_status, get_pod_logs, wait_for_ready, get_events
+description: Manage PostgreSQL on Kubernetes. Handles single instance deployment, configuration, health monitoring, and self-healing.
+allowed-tools: run_action, apply_template, get_state, update_status, get_pod_logs, wait_for_ready, get_events, kubectl_describe, kubectl_get, kubectl_scale, kubectl_patch, kubectl_exec
 
 monitors:
-  - name: pg_ready
-    interval: 10s
-    script: scripts/monitors/pg_isready.sh
+  - name: pg_health
+    interval: 15s
+    script: scripts/monitors/health_check.sh
     parse: exit-code
     trigger_when: "exit_code != 0"
-  - name: replication
-    interval: 30s
-    script: scripts/monitors/replication_check.sh
-    parse: key-value
-    trigger_when: "replica_count < 1"
 
 actions:
-  - name: init_primary
-    risk: high
-    description: Initialize PostgreSQL primary with replication configuration
-    script: scripts/init_primary.sh
-    params: [replication_user, replication_password]
-  - name: setup_replica
-    risk: medium
-    description: Set up a new replica from primary using pg_basebackup
-    script: scripts/setup_replica.sh
-    params: [primary_host, replication_user, replication_password]
-  - name: failover
-    risk: high
-    description: Promote a replica to primary
-    script: scripts/failover.sh
-    params: [target_pod]
   - name: health_check
     risk: low
-    description: Check PostgreSQL health
-    script: scripts/monitors/pg_isready.sh
+    description: Check PostgreSQL is accepting connections
+    script: scripts/monitors/health_check.sh
+  - name: get_config
+    risk: low
+    description: Get PostgreSQL runtime configuration
+    script: scripts/get_config.sh
 
 agents:
   planner:
@@ -47,44 +31,66 @@ agents:
     system_prompt_file: prompts/verifier.md
 ---
 
-# PostgreSQL Primary-Replica Knowledge
+# PostgreSQL Knowledge
 
-PostgreSQL uses streaming replication for high availability. One primary accepts writes; replicas stream WAL (Write-Ahead Log) from the primary for read scaling and failover.
+PostgreSQL is a powerful open-source relational database.
 
-## Creating a New Setup
-1. Apply StatefulSet template for primary (replicas=1 initially)
-2. Apply Services (primary service + headless service)
-3. Wait for primary pod to be ready
-4. Run init_primary action to configure replication user and pg_hba.conf
-5. Scale StatefulSet to include replicas
-6. Wait for replica pods to be ready
-7. Run setup_replica for each replica pod
+## Deployment Mode
 
-## Pod Roles
-- Pod-0 is always the initial primary
-- Pod-1, Pod-2, etc. are replicas
-- After failover, roles may change
+This skill manages a **single PostgreSQL instance** with persistent storage.
 
-## Scaling Replicas
-1. Increase StatefulSet replicas
-2. Wait for new pods to be ready
-3. Run setup_replica for each new pod
+## Deployment Guide
 
-## Failover
-1. Identify a healthy replica
-2. Run failover action to promote it (pg_ctl promote)
-3. Reconfigure other replicas to follow new primary
-4. Update services to point to new primary
+### Step 1: Determine Configuration
+From the goal, extract:
+- `memory_limit`: memory for container (e.g., "1Gi", "2Gi")
+- `cpu_limit`: CPU for container (e.g., "500m", "1000m")
+- `max_connections`: default 100
+- `shared_buffers`: typically 25% of memory. Use PostgreSQL format: "256MB", "512MB", "1GB"
+  - 1Gi memory → shared_buffers = "256MB"
+  - 2Gi memory → shared_buffers = "512MB"
+  - 4Gi memory → shared_buffers = "1GB"
+- `work_mem`: typically 4MB for general use
+- `storage`: disk size, default "10Gi"
 
-## Health Checks
-- pg_isready: checks if PostgreSQL is accepting connections
-- Replication check: queries pg_stat_replication on primary for lag and replica count
+### Step 2: Apply Kubernetes Resources (in this order)
+1. **configmap.yaml** — PostgreSQL configuration
+   - vars: `name`, `namespace`, `max_connections`, `shared_buffers`, `work_mem`
+2. **service.yaml** — ClusterIP service for client connections
+   - vars: `name`, `namespace`, `port` (default: 5432)
+3. **statefulset.yaml** — the PostgreSQL pod
+   - vars: `name`, `namespace`, `image`, `replicas` (always 1), `memory_limit`, `cpu_limit`, `storage`
 
-## Important Ports
-- Default port: 5432
+### Step 3: Wait for Pod Ready
+- Use `wait_for_ready` with `expected_count` = 1, `timeout_seconds` = 120
+- Pod must be Running and Ready before proceeding
 
-## Configuration
-- wal_level = replica
-- max_wal_senders = 10
-- hot_standby = on
-- Primary identified by absence of standby.signal file
+### Step 4: Verify
+- Run `health_check` to verify PostgreSQL accepts connections
+- Run `get_config` to verify shared_buffers and max_connections
+- Update status to Running if healthy
+
+## Drift Healing
+When the trigger source is "drift" and reason mentions missing resources:
+1. Re-apply the missing templates using `apply_template` with the same variables as original deployment
+2. Use `get_state` to check current state and determine what variables to use
+3. After re-applying, verify PostgreSQL is healthy
+4. Update status accordingly
+
+## Spec Change Handling
+When spec changes (e.g., memory increase):
+1. Update configmap with new shared_buffers
+2. Re-apply statefulset with new resource limits
+3. Pod will rolling-restart with new config
+4. Verify health after restart
+
+## Health Check
+- `pg_isready` → checks if PostgreSQL accepts connections
+
+## Guardrails
+- NEVER drop databases without explicit confirmation
+- max_connections should not exceed 500 for single instance
+- shared_buffers should not exceed 40% of available memory
+
+## Port
+- Default PostgreSQL port: 5432

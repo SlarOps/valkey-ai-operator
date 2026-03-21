@@ -28,7 +28,7 @@ impl Default for PipelineConfig {
             agent_timeout_secs: 120,
             llm_call_timeout_secs: 60,
             max_iterations: 30,
-            model: "claude-haiku-4-5-20251001".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
         }
     }
 }

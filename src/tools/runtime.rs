@@ -11,6 +11,7 @@ use tracing::info;
 use crate::agent::tool::{Tool, ToolSafety};
 use crate::agent::types::ToolResult;
 use crate::skill::types::LoadedSkill;
+use crate::tools::desired_state;
 use crate::tools::k8s::apply_server_side;
 use crate::tools::template::render_template;
 
@@ -224,6 +225,7 @@ pub struct ApplyTemplate {
     skill: Arc<LoadedSkill>,
     namespace: String,
     resource_name: String,
+    resource_uid: String,
     image: String,
 }
 
@@ -233,6 +235,7 @@ impl ApplyTemplate {
         skill: Arc<LoadedSkill>,
         namespace: &str,
         resource_name: &str,
+        resource_uid: &str,
         image: &str,
     ) -> Self {
         Self {
@@ -240,6 +243,7 @@ impl ApplyTemplate {
             skill,
             namespace: namespace.to_string(),
             resource_name: resource_name.to_string(),
+            resource_uid: resource_uid.to_string(),
             image: image.to_string(),
         }
     }
@@ -329,10 +333,22 @@ impl Tool for ApplyTemplate {
             },
         };
 
+        // Build ownerReference for the parent AIResource
+        let owner_ref = desired_state::build_owner_ref(&self.resource_name, &self.resource_uid);
+
         // kubectl apply server-side
-        match apply_server_side(&self.client, &self.namespace, &manifest).await {
+        match apply_server_side(&self.client, &self.namespace, &manifest, Some(&owner_ref)).await {
             Ok(msg) => {
                 info!("apply_template '{}': {}", template_name, msg);
+
+                // Store rendered YAML in desired-state annotation for fast-path reconciliation
+                if let Err(e) = desired_state::store_rendered(
+                    &self.client, &self.namespace, &self.resource_name,
+                    template_name, &rendered,
+                ).await {
+                    tracing::warn!("Failed to store desired state for '{}': {}", template_name, e);
+                }
+
                 let output = json!({ "applied": true, "message": msg });
                 ToolResult { success: true, output: output.to_string() }
             }

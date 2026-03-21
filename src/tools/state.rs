@@ -144,6 +144,7 @@ impl Tool for GetState {
             resource: ResourceInfo {
                 name: self.resource_name.clone(),
                 namespace: self.namespace.clone(),
+                uid: String::new(), // uid not needed for state query
                 skill: self.skill_name.clone(),
                 goal: self.goal.clone(),
                 image: self.image.clone(),
