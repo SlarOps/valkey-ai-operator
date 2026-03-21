@@ -155,7 +155,13 @@ async fn reconcile(
         }
     }
 
-    Ok(Action::requeue(Duration::from_secs(10)))
+    // Adaptive requeue: fast when work is needed, slow when stable
+    let requeue_secs = match resource.status.as_ref().and_then(|s| s.phase.as_ref()) {
+        Some(ResourcePhase::Running) => 120,      // stable — check every 2 min
+        Some(ResourcePhase::Initializing) => 15,   // active work — check frequently
+        _ => 30,                                    // pending/failed — moderate
+    };
+    Ok(Action::requeue(Duration::from_secs(requeue_secs)))
 }
 
 fn error_policy(
@@ -534,21 +540,28 @@ async fn monitor_loop(state: Arc<OperatorState>) {
 
         for (ns, name, monitor_name, script, parse_type, trigger_when, skill_dir) in &due {
             // Find a ready pod to run the monitor script on
+            // Try multiple label selectors: Helm-style first, then legacy
             let pod_api: Api<Pod> = Api::namespaced(state.client.clone(), ns);
-            let label_selector = format!("app={}", name);
-            let lp = ListParams::default().labels(&label_selector);
+            let label_selectors = vec![
+                format!("app.kubernetes.io/instance={}", name),
+                format!("app={}", name),
+            ];
 
-            let target_pod = match pod_api.list(&lp).await {
-                Ok(pod_list) => {
-                    pod_list.items.into_iter().find(|pod| {
+            let mut target_pod = None;
+            for label_selector in &label_selectors {
+                let lp = ListParams::default().labels(label_selector);
+                if let Ok(pod_list) = pod_api.list(&lp).await {
+                    target_pod = pod_list.items.into_iter().find(|pod| {
                         pod.status.as_ref()
                             .and_then(|s| s.conditions.as_ref())
                             .map(|conds| conds.iter().any(|c| c.type_ == "Ready" && c.status == "True"))
                             .unwrap_or(false)
-                    })
+                    });
+                    if target_pod.is_some() {
+                        break;
+                    }
                 }
-                Err(_) => None,
-            };
+            }
 
             let target_pod_name = match target_pod {
                 Some(pod) => pod.metadata.name.unwrap_or_default(),

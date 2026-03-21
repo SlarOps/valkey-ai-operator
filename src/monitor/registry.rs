@@ -102,6 +102,7 @@ mod tests {
                 name: "test".to_string(),
                 description: None,
                 allowed_tools: None,
+                chart: None,
                 monitors: vec![MonitorDef {
                     name: "health".to_string(),
                     interval: "10s".to_string(),

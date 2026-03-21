@@ -18,7 +18,8 @@ pub struct ResourceInfo {
     pub uid: String,
     pub skill: String,
     pub goal: String,
-    pub image: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

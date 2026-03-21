@@ -107,7 +107,8 @@ spec:
                     type: integer
                 type: object
               image:
-                description: Container image to run.
+                description: Container image (optional — Helm-based skills use chart defaults).
+                nullable: true
                 type: string
               resources:
                 description: CPU/memory resource requirements for the workload pod.
@@ -145,7 +146,6 @@ spec:
                 type: string
             required:
             - goal
-            - image
             - skill
             type: object
           status:

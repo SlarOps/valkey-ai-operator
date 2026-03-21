@@ -132,8 +132,9 @@ pub struct AIResourceSpec {
     pub skill: String,
     /// High-level goal the agent should achieve.
     pub goal: String,
-    /// Container image to run.
-    pub image: String,
+    /// Container image (optional — Helm-based skills use chart defaults).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
     /// CPU/memory resource requirements for the workload pod.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources: Option<ResourceRequirements>,
