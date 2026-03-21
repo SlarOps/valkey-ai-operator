@@ -2,7 +2,7 @@
 name: valkey-cluster-helm
 description: Manage Valkey cluster on Kubernetes using the Bitnami Helm chart. Handles deployment, scaling, healing, and configuration changes.
 chart: oci://registry-1.docker.io/bitnamicharts/valkey-cluster
-allowed-tools: helm_install, helm_upgrade, helm_status, helm_get_values, helm_show_values, get_state, update_status, get_pod_logs, wait_for_ready, get_events, kubectl_describe, kubectl_get, kubectl_exec
+allowed-tools: helm_install, helm_upgrade, helm_status, helm_get_values, helm_show_values, get_state, update_status, get_pod_logs, wait_for_ready, get_events, kubectl_describe, kubectl_get, kubectl_exec, file_read, ls, glob, grep, content_search, file_list
 
 monitors:
   - name: pod_health
@@ -14,14 +14,8 @@ monitors:
 actions: []
 
 agents:
-  planner:
-    system_prompt_file: prompts/planner.md
-  simulator:
-    system_prompt_file: prompts/simulator.md
-  executor:
-    system_prompt_file: prompts/executor.md
-  verifier:
-    system_prompt_file: prompts/verifier.md
+  agent:
+    system_prompt_file: prompts/agent.md
 ---
 
 # Valkey Cluster via Bitnami Helm Chart

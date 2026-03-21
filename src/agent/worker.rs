@@ -2,12 +2,16 @@ use crate::channel::EventReceiver;
 use crate::crd::GuardrailSpec;
 use crate::monitor::registry::MonitorRegistry;
 use crate::pipeline::{self, PipelineConfig, PipelineResult};
-use crate::skill::types::{LoadedSkill, RiskLevel};
-use crate::types::{CircuitBreaker, CircuitState, ResourceEvent};
+use crate::skill::types::LoadedSkill;
+use crate::types::{CircuitBreaker, ResourceEvent};
 use crate::agent::provider::Provider;
 use kube::Client;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tracing::{info, warn, error};
+
+/// Minimum seconds between pipeline runs after a success (prevents event storm)
+const COOLDOWN_AFTER_SUCCESS_SECS: u64 = 30;
 
 pub struct AgentInstance {
     pub resource_name: String,
@@ -19,6 +23,10 @@ pub struct AgentInstance {
     pub config: PipelineConfig,
     pub monitor_registry: Arc<Mutex<MonitorRegistry>>,
     pub guardrails: Option<GuardrailSpec>,
+    /// Track when last successful pipeline completed (for cooldown)
+    last_success: Option<Instant>,
+    /// Track whether goal has been achieved (phase=Running)
+    goal_achieved: bool,
 }
 
 impl AgentInstance {
@@ -42,14 +50,15 @@ impl AgentInstance {
             config,
             monitor_registry,
             guardrails,
+            last_success: None,
+            goal_achieved: false,
         }
     }
 
-    /// Main event loop — receives events, runs pipeline
+    /// Main event loop — receives events, runs single-agent pipeline
     pub async fn run(mut self, mut rx: EventReceiver) {
         info!("AgentInstance started for {}/{}", self.resource_namespace, self.resource_name);
 
-        // Queue for events that arrive while pipeline is running
         let mut pending_event: Option<ResourceEvent> = None;
 
         while let Some(event) = rx.recv().await {
@@ -59,7 +68,6 @@ impl AgentInstance {
                     break;
                 }
                 event => {
-                    // Dedup: if we already have a pending event with same trigger source, skip
                     if pending_event.is_some() {
                         info!("Event queued, skipping duplicate for {}/{}", self.resource_namespace, self.resource_name);
                         continue;
@@ -67,7 +75,6 @@ impl AgentInstance {
 
                     self.handle_event(event).await;
 
-                    // Process any pending event
                     if let Some(queued) = pending_event.take() {
                         self.handle_event(queued).await;
                     }
@@ -84,7 +91,6 @@ impl AgentInstance {
             | ResourceEvent::MonitorTrigger(s)
             | ResourceEvent::SpecChange(s) => s.clone(),
             ResourceEvent::DriftDetected(s, drift_info) => {
-                // Enrich snapshot with drift details so agent knows what's missing
                 let mut enriched = s.clone();
                 enriched.trigger.reason = format!(
                     "Child resources missing: {}. Re-apply from desired state.",
@@ -95,29 +101,63 @@ impl AgentInstance {
             ResourceEvent::Shutdown => return,
         };
 
+        // ── Event filtering ──────────────────────────────────────────────
+        // Skip monitor events when goal is already achieved (phase=Running)
+        // Only SpecChange, DriftDetected, and Bootstrap should re-trigger
+        if self.goal_achieved {
+            match &event {
+                ResourceEvent::MonitorTrigger(_) => {
+                    info!(
+                        "Skipping monitor event for {}/{}: goal already achieved",
+                        self.resource_namespace, self.resource_name
+                    );
+                    return;
+                }
+                ResourceEvent::SpecChange(_) => {
+                    // Spec changed → goal may have changed, reset achieved flag
+                    info!("Spec changed for {}/{}, resetting goal_achieved", self.resource_namespace, self.resource_name);
+                    self.goal_achieved = false;
+                }
+                _ => {}
+            }
+        }
+
+        // Cooldown: skip events too soon after last success
+        if let Some(last) = self.last_success {
+            let elapsed = last.elapsed().as_secs();
+            if elapsed < COOLDOWN_AFTER_SUCCESS_SECS {
+                match &event {
+                    ResourceEvent::SpecChange(_) | ResourceEvent::DriftDetected(_, _) => {
+                        // Always process spec changes and drift, even during cooldown
+                    }
+                    _ => {
+                        info!(
+                            "Cooldown active for {}/{} ({}s remaining), skipping {:?}",
+                            self.resource_namespace, self.resource_name,
+                            COOLDOWN_AFTER_SUCCESS_SECS - elapsed,
+                            snapshot.trigger.source,
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+
         // Check circuit breaker
         if self.circuit_breaker.is_open() {
             warn!("Circuit breaker OPEN for {}/{}, skipping", self.resource_namespace, self.resource_name);
             return;
         }
 
-        // Half-open: only allow low risk
-        let risk = self.determine_risk(&event);
-        if self.circuit_breaker.state == CircuitState::HalfOpen && risk != RiskLevel::Low {
-            warn!("Circuit breaker HALF-OPEN for {}/{}, only low-risk allowed", self.resource_namespace, self.resource_name);
-            return;
-        }
-
         info!(
-            "Processing event for {}/{}: trigger={}, risk={:?}",
+            "Processing event for {}/{}: trigger={}",
             self.resource_namespace, self.resource_name,
-            snapshot.trigger.source, risk
+            snapshot.trigger.source,
         );
 
         let result = pipeline::run_pipeline(
             &snapshot,
             &self.skill,
-            risk,
             self.provider.clone(),
             self.client.clone(),
             &self.config,
@@ -129,10 +169,12 @@ impl AgentInstance {
             Ok(PipelineResult::Success { actions_taken }) => {
                 info!("Pipeline succeeded for {}/{}: {:?}", self.resource_namespace, self.resource_name, actions_taken);
                 self.circuit_breaker.record_success();
-            }
-            Ok(PipelineResult::SimulatorRejected { reason }) => {
-                warn!("Simulator rejected plan for {}/{}: {}", self.resource_namespace, self.resource_name, reason);
-                // Don't count as failure — plan was safely rejected
+                self.last_success = Some(Instant::now());
+                // If agent called update_status with Running, mark goal achieved
+                if actions_taken.iter().any(|a| a.contains("update_status") && a.contains("Running")) {
+                    self.goal_achieved = true;
+                    info!("Goal achieved for {}/{}, suppressing future monitor events", self.resource_namespace, self.resource_name);
+                }
             }
             Ok(PipelineResult::Timeout) => {
                 warn!("Pipeline timed out for {}/{}", self.resource_namespace, self.resource_name);
@@ -146,36 +188,6 @@ impl AgentInstance {
                 error!("Pipeline error for {}/{}: {}", self.resource_namespace, self.resource_name, e);
                 self.circuit_breaker.record_failure();
             }
-        }
-    }
-
-    fn determine_risk(&self, event: &ResourceEvent) -> RiskLevel {
-        match event {
-            ResourceEvent::Bootstrap(_) => RiskLevel::High,
-            ResourceEvent::SpecChange(_) => RiskLevel::Medium,
-            ResourceEvent::DriftDetected(_, _) => RiskLevel::Low, // re-apply from desired state, no planning needed
-            ResourceEvent::MonitorTrigger(snapshot) => {
-                // Check which actions match the trigger, take max risk
-                let source = &snapshot.trigger.source;
-                let max_risk = self.skill.config.actions.iter()
-                    .map(|a| &a.risk)
-                    .max_by_key(|r| match r {
-                        RiskLevel::Low => 0,
-                        RiskLevel::Medium => 1,
-                        RiskLevel::High => 2,
-                    })
-                    .cloned()
-                    .unwrap_or(RiskLevel::Medium);
-
-                // For monitor triggers, default to the highest risk action available
-                // The planner/executor will decide what's actually needed
-                if source.contains("bootstrap") {
-                    RiskLevel::High
-                } else {
-                    max_risk
-                }
-            }
-            ResourceEvent::Shutdown => RiskLevel::Low,
         }
     }
 }

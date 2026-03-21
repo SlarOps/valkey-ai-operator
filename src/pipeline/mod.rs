@@ -1,9 +1,6 @@
-pub mod planner;
-pub mod simulator;
 pub mod executor;
-pub mod verifier;
 
-use crate::skill::types::{LoadedSkill, RiskLevel};
+use crate::skill::types::LoadedSkill;
 use crate::types::StateSnapshot;
 use crate::agent::provider::Provider;
 use crate::crd::GuardrailSpec;
@@ -24,9 +21,9 @@ pub struct PipelineConfig {
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
-            pipeline_timeout_secs: 600,
-            agent_timeout_secs: 300,
-            llm_call_timeout_secs: 60,
+            pipeline_timeout_secs: 900,
+            agent_timeout_secs: 900,
+            llm_call_timeout_secs: 120,
             max_iterations: 50,
             model: "claude-sonnet-4-20250514".to_string(),
         }
@@ -36,15 +33,13 @@ impl Default for PipelineConfig {
 pub enum PipelineResult {
     Success { actions_taken: Vec<String> },
     Failed { reason: String, partial_actions: Vec<String> },
-    SimulatorRejected { reason: String },
     Timeout,
 }
 
-/// Run the multi-agent pipeline for a given event
+/// Run the single-agent pipeline: one autonomous agent that reasons continuously
 pub async fn run_pipeline(
     snapshot: &StateSnapshot,
     skill: &LoadedSkill,
-    risk: RiskLevel,
     provider: Arc<dyn Provider>,
     client: Client,
     config: &PipelineConfig,
@@ -54,86 +49,11 @@ pub async fn run_pipeline(
     let timeout = tokio::time::Duration::from_secs(config.pipeline_timeout_secs);
 
     let result = tokio::time::timeout(timeout, async {
-        match risk {
-            RiskLevel::Low => {
-                info!("Pipeline: low risk → Executor (autonomous) → Verifier");
-                let exec_result = executor::run_autonomous(
-                    snapshot, skill, provider.clone(), client.clone(), config,
-                    monitor_registry.clone(), guardrails.clone(),
-                ).await?;
-
-                let _verified = verifier::run(
-                    snapshot, skill, provider.clone(), client.clone(), config,
-                    monitor_registry.clone(), guardrails.clone(),
-                ).await?;
-
-                Ok(exec_result)
-            }
-            RiskLevel::Medium => {
-                info!("Pipeline: medium risk → Planner → Executor (plan) → Verifier");
-                let plan = planner::run(
-                    snapshot, skill, provider.clone(), client.clone(), config,
-                    monitor_registry.clone(), guardrails.clone(),
-                ).await?;
-
-                let exec_result = executor::run_plan(
-                    &plan, snapshot, skill, provider.clone(), client.clone(), config,
-                    monitor_registry.clone(), guardrails.clone(),
-                ).await?;
-
-                let _verified = verifier::run(
-                    snapshot, skill, provider.clone(), client.clone(), config,
-                    monitor_registry.clone(), guardrails.clone(),
-                ).await?;
-
-                Ok(exec_result)
-            }
-            RiskLevel::High => {
-                info!("Pipeline: high risk → Planner → Simulator → Executor (plan) → Verifier");
-                let max_retries = 2;
-                let mut last_rejection = String::new();
-
-                for attempt in 0..=max_retries {
-                    let plan = if attempt == 0 {
-                        planner::run(
-                            snapshot, skill, provider.clone(), client.clone(), config,
-                            monitor_registry.clone(), guardrails.clone(),
-                        ).await?
-                    } else {
-                        info!("Pipeline: re-planning (attempt {}/{}) with simulator feedback", attempt + 1, max_retries + 1);
-                        planner::run_with_feedback(
-                            snapshot, skill, provider.clone(), client.clone(), config,
-                            monitor_registry.clone(), guardrails.clone(),
-                            &last_rejection,
-                        ).await?
-                    };
-
-                    let sim_result = simulator::run(
-                        &plan, snapshot, skill, provider.clone(), client.clone(), config,
-                        monitor_registry.clone(), guardrails.clone(),
-                    ).await?;
-
-                    if sim_result.approved {
-                        let exec_result = executor::run_plan(
-                            &plan, snapshot, skill, provider.clone(), client.clone(), config,
-                            monitor_registry.clone(), guardrails.clone(),
-                        ).await?;
-
-                        let _verified = verifier::run(
-                            snapshot, skill, provider.clone(), client.clone(), config,
-                            monitor_registry.clone(), guardrails.clone(),
-                        ).await?;
-
-                        return Ok(exec_result);
-                    }
-
-                    warn!("Simulator rejected plan (attempt {}): {}", attempt + 1, sim_result.reason);
-                    last_rejection = sim_result.reason;
-                }
-
-                Ok(PipelineResult::SimulatorRejected { reason: last_rejection })
-            }
-        }
+        info!("Pipeline: single agent → continuous reasoning");
+        executor::run(
+            snapshot, skill, provider.clone(), client.clone(), config,
+            monitor_registry.clone(), guardrails.clone(),
+        ).await
     }).await;
 
     match result {
