@@ -11,6 +11,8 @@ pub struct SkillConfig {
     #[serde(default, rename = "allowed-tools")]
     pub allowed_tools: Option<String>,
     #[serde(default)]
+    pub chart: Option<String>,
+    #[serde(default)]
     pub monitors: Vec<MonitorDef>,
     #[serde(default)]
     pub actions: Vec<ActionDef>,

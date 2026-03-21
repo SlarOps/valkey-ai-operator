@@ -1,4 +1,5 @@
 pub mod desired_state;
+pub mod helm;
 pub mod k8s;
 pub mod runtime;
 pub mod state;
@@ -40,6 +41,10 @@ pub fn register_tools_for_role(
             Box::new(k8s::GetEvents::new(client.clone(), resource_namespace, resource_name)),
             Box::new(k8s::KubectlDescribe::new(client.clone(), resource_namespace)),
             Box::new(k8s::KubectlGet::new(client.clone(), resource_namespace)),
+            // Helm read-only tools
+            Box::new(helm::HelmStatus::new(resource_namespace)),
+            Box::new(helm::HelmGetValues::new(resource_namespace)),
+            Box::new(helm::HelmShowValues::new()),
         ],
         "executor" => vec![
             // Existing tools
@@ -64,6 +69,12 @@ pub fn register_tools_for_role(
             Box::new(k8s::KubectlScale::new(client.clone(), resource_namespace, guardrails.clone())),
             Box::new(k8s::KubectlPatch::new(client.clone(), resource_namespace, guardrails.clone())),
             Box::new(k8s::KubectlExec::new(client.clone(), resource_namespace, denied_commands.clone())),
+            // Helm tools
+            Box::new(helm::HelmInstall::new(resource_namespace)),
+            Box::new(helm::HelmUpgrade::new(resource_namespace)),
+            Box::new(helm::HelmStatus::new(resource_namespace)),
+            Box::new(helm::HelmGetValues::new(resource_namespace)),
+            Box::new(helm::HelmShowValues::new()),
         ],
         "verifier" => vec![
             Box::new(state::GetState::new(
@@ -76,6 +87,9 @@ pub fn register_tools_for_role(
             Box::new(k8s::KubectlDescribe::new(client.clone(), resource_namespace)),
             Box::new(k8s::KubectlGet::new(client.clone(), resource_namespace)),
             Box::new(k8s::GetPodLogs::new(client.clone(), resource_namespace)),
+            // Helm read-only tools
+            Box::new(helm::HelmStatus::new(resource_namespace)),
+            Box::new(helm::HelmGetValues::new(resource_namespace)),
         ],
         _ => vec![],
     };

@@ -67,9 +67,9 @@ impl Tool for GetState {
     fn safety(&self) -> ToolSafety { ToolSafety::ReadOnly }
 
     async fn execute(&self, _args: Value) -> ToolResult {
-        // Query K8s for pods with label selector app={resource_name}
+        // Query K8s for pods — try standard Helm labels first, fall back to app label
         let pod_api: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
-        let label_selector = format!("app={}", self.resource_name);
+        let label_selector = format!("app.kubernetes.io/instance={}", self.resource_name);
         let lp = ListParams::default().labels(&label_selector);
 
         let pods = match pod_api.list(&lp).await {
@@ -147,7 +147,7 @@ impl Tool for GetState {
                 uid: String::new(), // uid not needed for state query
                 skill: self.skill_name.clone(),
                 goal: self.goal.clone(),
-                image: self.image.clone(),
+                image: if self.image.is_empty() { None } else { Some(self.image.clone()) },
             },
             monitors: monitor_state,
             k8s: K8sState { pods, statefulsets },

@@ -392,6 +392,10 @@ impl Tool for WaitForReady {
                 "timeout_seconds": {
                     "type": "integer",
                     "description": "Timeout in seconds (default: 120)"
+                },
+                "label_selector": {
+                    "type": "string",
+                    "description": "Custom label selector (default: app.kubernetes.io/instance=<resource_name>)"
                 }
             },
             "required": ["expected_count"]
@@ -404,7 +408,9 @@ impl Tool for WaitForReady {
         let expected_count = args["expected_count"].as_u64().unwrap_or(1) as usize;
         let timeout_seconds = args["timeout_seconds"].as_u64().unwrap_or(120);
 
-        let label_selector = format!("app={}", self.resource_name);
+        let label_selector = args["label_selector"].as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("app.kubernetes.io/instance={}", self.resource_name));
         let api: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_seconds);
 

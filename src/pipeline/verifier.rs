@@ -26,7 +26,7 @@ pub async fn run(
     let tools = tools::register_tools_for_role(
         "verifier", client, Arc::new(skill.clone()),
         &snapshot.resource.name, &snapshot.resource.namespace,
-        &snapshot.resource.uid, &snapshot.resource.image,
+        &snapshot.resource.uid, snapshot.resource.image.as_deref().unwrap_or(""),
         &snapshot.resource.goal, monitor_registry, guardrails,
     );
 
