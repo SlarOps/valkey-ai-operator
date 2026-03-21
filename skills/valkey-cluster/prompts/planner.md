@@ -21,11 +21,21 @@ Plan full creation in order:
 5. get_state (to retrieve pod IPs)
 6. run_action cluster_init — pod_ips (comma-separated IP:PORT), replicas_per_master
 
-## Scaling (resources exist, need more nodes)
-1. Scale StatefulSet replicas
+## Scale Up (need more masters)
+1. Scale StatefulSet replicas up
 2. wait_for_ready for new count
 3. run_action add_node for each new pod
 4. run_action rebalance
+
+## Scale Down (need fewer masters)
+Critical: must move slots BEFORE removing nodes, or data is lost.
+1. kubectl_exec: `valkey-cli CLUSTER NODES` to get node IDs
+2. For each master to remove (highest ordinal pods):
+   a. run_action reshard — from_node_id=<removing>, to_node_id=<staying>, cluster_ip=<any>
+3. For each replica of removed masters: run_action remove_node
+4. For each empty master: run_action remove_node
+5. Scale StatefulSet down to new replica count
+6. run_action rebalance to even out slots
 
 ## Healing (trigger is monitor, cluster degraded)
 - Use get_state and kubectl_get to understand current cluster topology

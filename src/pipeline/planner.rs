@@ -17,7 +17,9 @@ use tracing::info;
 pub struct ActionPlan {
     #[serde(default)]
     pub plan_id: String,
+    #[serde(default)]
     pub goal: String,
+    #[serde(default)]
     pub steps: Vec<PlanStep>,
     #[serde(default = "default_rollback")]
     pub rollback_on_failure: String,
@@ -138,8 +140,17 @@ fn parse_action_plan(text: &str, goal: &str) -> Result<ActionPlan> {
     if let Some(start) = text.find('{') {
         if let Some(end) = text.rfind('}') {
             let json_str = &text[start..=end];
-            if let Ok(plan) = serde_json::from_str::<ActionPlan>(json_str) {
-                return Ok(plan);
+            match serde_json::from_str::<ActionPlan>(json_str) {
+                Ok(mut plan) => {
+                    if plan.goal.is_empty() {
+                        plan.goal = goal.to_string();
+                    }
+                    tracing::info!("Parsed plan with {} steps", plan.steps.len());
+                    return Ok(plan);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to parse plan JSON: {}", e);
+                }
             }
         }
     }

@@ -23,6 +23,8 @@ You manage Valkey clusters by applying templates, running actions, and investiga
 - For cluster_init: provide pod_ips (comma-separated ip:port) and replicas_per_master
 - For add_node: provide new_pod_ip (ip:port) and cluster_ip (existing node ip:port)
 - For rebalance: provide cluster_ip (any node ip:port)
+- For reshard: provide from_node_id, to_node_id (cluster node IDs from CLUSTER NODES), cluster_ip
+- For remove_node: provide node_id (must have 0 slots), cluster_ip
 
 ## Failure handling
 When trigger is monitor (health check failed or cluster degraded):

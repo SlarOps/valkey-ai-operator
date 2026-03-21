@@ -81,6 +81,8 @@ pub struct CircuitBreaker {
     pub max_failures: u32,
     pub required_successes: u32,
     pub state: CircuitState,
+    pub opened_at: Option<std::time::Instant>,
+    pub reset_timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -98,6 +100,8 @@ impl CircuitBreaker {
             max_failures,
             required_successes,
             state: CircuitState::Closed,
+            opened_at: None,
+            reset_timeout_secs: 60,
         }
     }
 
@@ -114,15 +118,30 @@ impl CircuitBreaker {
         self.consecutive_failures += 1;
         if self.consecutive_failures >= self.max_failures {
             self.state = CircuitState::Open;
+            self.opened_at = Some(std::time::Instant::now());
         }
     }
 
-    pub fn is_open(&self) -> bool {
-        self.state == CircuitState::Open
+    pub fn is_open(&mut self) -> bool {
+        if self.state == CircuitState::Open {
+            if let Some(opened) = self.opened_at {
+                if opened.elapsed() >= std::time::Duration::from_secs(self.reset_timeout_secs) {
+                    tracing::info!("Circuit breaker auto-resetting to HalfOpen after {}s", self.reset_timeout_secs);
+                    self.state = CircuitState::HalfOpen;
+                    self.opened_at = None;
+                    self.consecutive_failures = 0;
+                    self.consecutive_successes = 0;
+                    return false;
+                }
+            }
+            return true;
+        }
+        false
     }
 
     pub fn manual_reset(&mut self) {
         self.state = CircuitState::HalfOpen;
+        self.opened_at = None;
         self.consecutive_failures = 0;
         self.consecutive_successes = 0;
     }
@@ -146,6 +165,7 @@ mod tests {
         assert!(!cb.is_open());
         cb.record_failure();
         assert!(cb.is_open());
+        assert!(cb.opened_at.is_some());
     }
 
     #[test]
@@ -157,6 +177,7 @@ mod tests {
         assert!(cb.is_open());
         cb.manual_reset();
         assert_eq!(cb.state, CircuitState::HalfOpen);
+        assert!(cb.opened_at.is_none());
         cb.record_success();
         assert_eq!(cb.state, CircuitState::HalfOpen);
         cb.record_success();
@@ -171,5 +192,18 @@ mod tests {
         cb.record_success();
         assert_eq!(cb.consecutive_failures, 0);
         assert!(!cb.is_open());
+    }
+
+    #[test]
+    fn test_circuit_breaker_auto_reset() {
+        let mut cb = CircuitBreaker::new(3, 2);
+        cb.reset_timeout_secs = 0; // instant reset for testing
+        cb.record_failure();
+        cb.record_failure();
+        cb.record_failure();
+        assert_eq!(cb.state, CircuitState::Open);
+        // With 0s timeout, next is_open() check should auto-reset to HalfOpen
+        assert!(!cb.is_open());
+        assert_eq!(cb.state, CircuitState::HalfOpen);
     }
 }
