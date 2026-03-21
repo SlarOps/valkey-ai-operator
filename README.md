@@ -6,6 +6,8 @@
 
 <p align="center"><strong>What if your Kubernetes operator could think?</strong></p>
 
+> **Note**: This is a proof-of-concept / research project exploring LLM-driven Kubernetes operators. It is **not intended for production use**. The agent's behavior is non-deterministic, and there are no guarantees of correctness or reliability. Use it to learn, experiment, and explore the idea — not to run your infrastructure.
+
 A generic AI-driven K8s operator where reconciliation logic is not code — it's an AI agent. Define a **skill** (what to manage), create an **AIResource** (what you want), and the agent figures out the rest: deploys, scales, heals, patches — all by reasoning about desired vs actual state.
 
 No giant `switch` statements. No 10,000-line controllers. Just markdown skills and natural language goals.
