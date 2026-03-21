@@ -1,6 +1,10 @@
-# Krust Operator
+<p align="center">
+  <img src="docs/images/krust-icon.png" alt="Krust Operator" width="120" />
+</p>
 
-> **What if your Kubernetes operator could think?**
+<h1 align="center">Krust Operator</h1>
+
+<p align="center"><strong>What if your Kubernetes operator could think?</strong></p>
 
 A generic AI-driven K8s operator where reconciliation logic is not code — it's an AI agent. Define a **skill** (what to manage), create an **AIResource** (what you want), and the agent figures out the rest: deploys, scales, heals, patches — all by reasoning about desired vs actual state.
 

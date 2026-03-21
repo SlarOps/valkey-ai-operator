@@ -1,4 +1,5 @@
 /target
 Cargo.lock
 docs/superpowers/
-docs/images/
+docs/images/*
+!docs/images/krust-icon.png
