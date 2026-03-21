@@ -32,10 +32,11 @@ The real comparison is **Krust vs traditional operators** (like the Redis operat
 
 Krust trades **determinism for flexibility**:
 
-- **Pro**: Adding PostgreSQL support = 0 lines of Rust, just markdown + YAML + shell
+- **Pro**: Adding a new workload = 0 lines of Rust, just markdown + shell scripts
 - **Pro**: Agent can reason about novel situations not explicitly coded
+- **Pro**: Agent can use existing Helm charts — no need to rewrite deployment logic
 - **Con**: Each reconciliation costs an LLM API call (~30s latency, ~$0.01)
-- **Con**: Agent can make mistakes — the simulator catches some, but not all
+- **Con**: Agent can make mistakes — loop detection and circuit breakers catch most, but not all
 - **Con**: Helm/ArgoCD are production-proven; Krust is a proof of concept
 
 **Use Helm** for straightforward deployments. **Use a traditional operator** when you need battle-tested, deterministic Day 2 operations. **Explore Krust** if you're interested in whether LLM agents can replace hand-written operator code.
@@ -44,7 +45,7 @@ Krust trades **determinism for flexibility**:
 
 ```
                     ┌──────────────┐
-                    │  AIResource  │  "Deploy PostgreSQL with 1Gi memory"
+                    │  AIResource  │  "Deploy a 3-master Valkey cluster, 512mb"
                     │  (goal+skill)│
                     └──────┬───────┘
                            │
@@ -54,40 +55,41 @@ Krust trades **determinism for flexibility**:
               │  • bootstrap            │
               │  • spec change          │
               │  • drift (missing child)│
+              │  adaptive requeue       │
               └────────────┬────────────┘
                            │ events
               ┌────────────▼────────────┐
-              │    Multi-Agent Pipeline  │
+              │   Single Agent Loop     │
               │                         │
-              │  High risk (bootstrap): │
-              │  Planner → Simulator    │
-              │  → Executor → Verifier  │
+              │  Observe → Decide →     │
+              │  Act → Verify → Adapt   │
               │                         │
-              │  Low risk (drift):      │
-              │  Executor → Verifier    │
+              │  • loop detection       │
+              │  • tool deduplication   │
+              │  • history compaction   │
               └────────────┬────────────┘
                            │ tools
               ┌────────────▼────────────┐
-              │    K8s Runtime          │
-              │  apply_template         │
-              │  run_action             │
-              │  get_state              │
-              │  wait_for_ready         │
+              │    Tool Layer           │
+              │  helm_install/upgrade   │
+              │  kubectl_exec/get/desc  │
+              │  get_state/update_status│
+              │  file_read/glob/grep    │
               └─────────────────────────┘
 ```
 
 ### Design Principles
 
 - **Skill** = source of truth — markdown defines what the agent knows and can do
-- **Agent** = decision maker — LLM reasons about state and decides actions
+- **Agent** = decision maker — single autonomous agent reasons continuously about state and decides actions
 - **K8s runtime** = delegated executor — the agent's tools, not the controller's logic
 
-Adding a new workload (PostgreSQL, Kafka, etc.) requires **zero Rust code** — just a new skill directory with markdown, YAML templates, and shell scripts.
+Adding a new workload (PostgreSQL, Kafka, etc.) requires **zero Rust code** — just a new skill directory with markdown and optional shell scripts.
 
 ## Quick Start
 
 ```bash
-# Prerequisites: Rust 1.75+, a K8s cluster (OrbStack, kind, etc.)
+# Prerequisites: Rust 1.75+, Helm 3, a K8s cluster (kind, OrbStack, etc.)
 
 # Install CRD and RBAC
 kubectl apply -f manifests/crd.yaml
@@ -96,14 +98,44 @@ kubectl apply -f manifests/rbac.yaml
 # Run operator locally
 SKILLS_DIR=./skills RUST_LOG=info cargo run --bin krust-operator
 
-# Deploy a PostgreSQL instance
-kubectl apply -f manifests/samples/postgresql.yaml
+# Deploy a Valkey cluster
+kubectl apply -f manifests/samples/valkey-cluster-helm.yaml
 
 # Watch the agent work
 kubectl get airesource -w
 ```
 
 ## Examples
+
+### Valkey Cluster (Helm-based)
+
+```yaml
+apiVersion: krust.io/v1
+kind: AIResource
+metadata:
+  name: my-valkey
+spec:
+  skill: valkey-cluster-helm
+  goal: "Deploy a 3-master Valkey cluster with 1 replica each, 512mb memory"
+  agent:
+    provider: vertex
+    region: us-east5
+    project_id: my-project
+```
+
+The agent will: check if a Helm release exists, run `helm install` with computed values (cluster.nodes=6, cluster.replicas=1, memory=512Mi), wait for all pods, verify `CLUSTER INFO` shows `cluster_state:ok` with 16384 slots, update status to Running.
+
+### Scaling
+
+```bash
+# Scale up to 4 masters — agent runs helm upgrade + CLUSTER MEET
+kubectl patch airesource my-valkey --type merge \
+  -p '{"spec":{"goal":"Deploy a 4-master Valkey cluster with 1 replica each, 512mb memory"}}'
+
+# Scale down to 3 masters — agent migrates slots, runs CLUSTER FORGET, then helm upgrade
+kubectl patch airesource my-valkey --type merge \
+  -p '{"spec":{"goal":"Deploy a 3-master Valkey cluster with 1 replica each, 256mb memory"}}'
+```
 
 ### PostgreSQL
 
@@ -123,53 +155,7 @@ spec:
   agent:
     provider: vertex
     region: us-east5
-    model: claude-haiku-4-5@20251001
 ```
-
-The agent will: create ConfigMap (postgresql.conf + pg_hba.conf), create Service (port 5432), create StatefulSet with 1 pod, wait for ready, run `pg_isready` health check, verify config, set status to Running.
-
-### Single Valkey Instance
-
-```yaml
-apiVersion: krust.io/v1
-kind: AIResource
-metadata:
-  name: my-valkey
-spec:
-  skill: valkey-cluster
-  goal: "Run a Valkey instance, 1Gi memory"
-  image: valkey/valkey:7
-  agent:
-    provider: vertex
-    region: us-east5
-```
-
-### 3-Master Valkey Cluster
-
-```yaml
-apiVersion: krust.io/v1
-kind: AIResource
-metadata:
-  name: my-cluster
-spec:
-  skill: valkey-cluster
-  goal: "Run a 3-master Valkey cluster with 1 replica each, 2Gi memory"
-  image: valkey/valkey:7
-  resources:
-    limits:
-      memory: "2Gi"
-      cpu: "500m"
-  agent:
-    provider: vertex
-    region: us-east5
-    model: claude-haiku-4-5@20251001
-  guardrails:
-    max_replicas: 12
-    max_memory: "4Gi"
-    denied_commands: ["FLUSHALL", "FLUSHDB", "DEBUG", "SHUTDOWN"]
-```
-
-The agent will: calculate 6 pods (3 masters + 3 replicas), apply ConfigMap + Service + StatefulSet, wait for all pods, get pod IPs, run `cluster_init`, verify `cluster_state=ok` with 16384 slots assigned.
 
 ### Self-Healing
 
@@ -177,7 +163,7 @@ The agent will: calculate 6 pods (3 masters + 3 replicas), apply ConfigMap + Ser
 # Delete a child resource — agent detects drift and re-applies
 kubectl delete configmap my-postgres-config
 
-# Change the goal — agent re-plans and executes
+# Change the goal — agent observes state change, adapts, and executes
 kubectl patch airesource my-postgres --type merge \
   -p '{"spec":{"goal":"Deploy a single PostgreSQL instance with 2Gi memory"}}'
 
@@ -191,85 +177,87 @@ Skills define **what** the operator can manage. Each skill is a self-contained d
 
 ```
 skills/
-├── postgresql/
-│   ├── SKILL.md              # Domain knowledge + frontmatter (monitors, actions, agents)
+├── valkey-cluster-helm/
+│   ├── SKILL.md              # Helm chart knowledge + agent prompt config
 │   ├── prompts/
-│   │   ├── planner.md        # "Create a deployment plan as JSON..."
-│   │   ├── simulator.md      # "Validate plan for safety..."
-│   │   ├── executor.md       # "Execute using these tools..."
-│   │   └── verifier.md       # "Verify state matches goal..."
-│   ├── scripts/
-│   │   ├── get_config.sh
-│   │   └── monitors/
-│   │       └── health_check.sh
-│   └── templates/
-│       ├── configmap.yaml
-│       ├── service.yaml
-│       └── statefulset.yaml
+│   │   └── agent.md          # Single agent system prompt
+│   └── scripts/
+│       └── monitors/
+│           └── health_check.sh
 │
-└── valkey-cluster/
+└── postgresql/
     ├── SKILL.md
     ├── prompts/
+    │   └── agent.md
     ├── scripts/
-    │   ├── cluster_init.sh
-    │   ├── add_node.sh
-    │   ├── rebalance.sh
-    │   ├── get_config.sh
     │   └── monitors/
     └── templates/
+        ├── configmap.yaml
+        ├── service.yaml
+        └── statefulset.yaml
 ```
+
+### Skill Types
+
+**Helm-based skills** (e.g., `valkey-cluster-helm`) — agent uses `helm install/upgrade` tools. The SKILL.md contains chart knowledge (values mapping, scaling procedures). No templates needed.
+
+**Template-based skills** (e.g., `postgresql`) — agent uses `apply_template` to render and apply K8s manifests. Templates live in the skill directory.
 
 ### SKILL.md Format
 
 ```yaml
 ---
-name: postgresql
-description: Manage PostgreSQL on Kubernetes. Handles deployment, configuration, health monitoring, and self-healing.
-allowed-tools: run_action, apply_template, get_state, update_status, get_pod_logs, wait_for_ready, get_events
+name: valkey-cluster-helm
+description: Manage Valkey cluster using Bitnami Helm chart
+chart: oci://registry-1.docker.io/bitnamicharts/valkey-cluster
+allowed-tools: helm_install, helm_upgrade, helm_status, helm_get_values,
+  get_state, update_status, kubectl_exec, file_read, glob, grep
 
 monitors:
-  - name: pg_health
-    interval: 15s
+  - name: pod_health
+    interval: 10s
     script: scripts/monitors/health_check.sh
     parse: exit-code
     trigger_when: "exit_code != 0"
 
-actions:
-  - name: health_check
-    risk: low
-    description: Check PostgreSQL is accepting connections
-    script: scripts/monitors/health_check.sh
-
 agents:
-  planner:
-    system_prompt_file: prompts/planner.md
-  simulator:
-    system_prompt_file: prompts/simulator.md
-  executor:
-    system_prompt_file: prompts/executor.md
-  verifier:
-    system_prompt_file: prompts/verifier.md
+  agent:
+    system_prompt_file: prompts/agent.md
 ---
 
-# PostgreSQL Knowledge
+# Chart Knowledge
 
-(Markdown body: deployment guide, configuration rules, drift healing procedures, guardrails...)
+(Markdown body: deployment guide, scaling procedures, health checks...)
 ```
 
-The agent reads the markdown body as domain knowledge and uses the declared actions and templates as tools. The SKILL.md is the single source of truth for how to manage the workload.
+The agent reads the markdown body as domain knowledge. The `allowed-tools` field controls which tools the agent can use. The SKILL.md is the single source of truth for how to manage the workload.
 
-## Agent Pipeline
+## Single Agent Architecture
 
-| Risk Level | Trigger | Pipeline | Duration |
-|------------|---------|----------|----------|
-| **High** | Bootstrap (first deploy) | Planner → Simulator → Executor → Verifier | ~30s |
-| **Medium** | Spec change | Planner → Simulator → Executor → Verifier | ~30s |
-| **Low** | Drift (missing child resource) | Executor → Verifier | ~15s |
+The operator uses a **single autonomous agent** that reasons continuously — inspired by [Zeroclaw](https://github.com/zeroclaw-labs/zeroclaw)'s approach:
 
-- **Planner** — reads skill knowledge + current state, outputs JSON action plan
-- **Simulator** — validates plan safety (rejected plans get re-planned, up to 3 attempts)
-- **Executor** — runs the plan using tools (apply_template, run_action, wait_for_ready)
-- **Verifier** — confirms actual state matches goal, updates AIResource status
+```
+Observe → Decide → Act → Verify → Adapt → Complete
+```
+
+The agent maintains conversation history across iterations, allowing it to:
+- Observe current state and compare with the goal
+- Decide what action to take based on skill knowledge
+- Act using tools (helm, kubectl, etc.)
+- Verify the result and adapt if something went wrong
+- Complete by updating the AIResource status
+
+### Reliability Features
+
+| Feature | Description |
+|---------|-------------|
+| **Loop detection** | Hashes tool outputs per iteration; aborts after 3 identical rounds |
+| **Tool deduplication** | Skips identical tool calls within the same turn |
+| **History compaction** | LLM summarizes older messages when history exceeds 40 messages |
+| **Event filtering** | Suppresses monitor events when goal is already achieved |
+| **Cooldown** | 30s cooldown after successful pipeline to prevent event storms |
+| **Adaptive requeue** | 120s when Running, 15s when Initializing, 30s otherwise |
+| **Circuit breaker** | 3 consecutive failures → stops retrying, auto-resets after 60s |
 
 ## Drift Healing
 
@@ -278,39 +266,49 @@ The controller sets `ownerReferences` on all child resources. When a child is de
 1. K8s `.owns()` watch triggers reconcile on the parent AIResource
 2. Controller reads `krust.io/desired-state` annotation (stored rendered manifests)
 3. Controller checks each resource exists — if missing, sends `DriftDetected` event
-4. Agent receives event as **Low risk** — executor re-applies only the missing resource
-5. Verifier confirms health
-
-```
-kubectl delete configmap my-postgres-config
-  → .owns() triggers reconcile
-  → detect_drift() finds ConfigMap missing
-  → DriftDetected event → agent
-  → executor: apply_template(configmap.yaml)
-  → verifier: health_check → status=Running
-```
+4. Agent receives event, re-applies only the missing resource
+5. Agent verifies health and updates status
 
 When the AIResource itself is deleted, K8s garbage collection automatically cleans up all child resources.
 
 ## Agent Tools
 
-| Tool | Description |
-|------|-------------|
-| `apply_template` | Render and apply a K8s manifest template with ownerReference injection |
-| `run_action` | Execute a skill-defined script in a pod |
-| `get_state` | Get current K8s state (pods, statefulsets, monitors) |
-| `update_status` | Update AIResource status (phase, message) |
-| `get_pod_logs` | Get pod logs (last 100 lines) |
-| `wait_for_ready` | Poll until expected pods are ready |
-| `get_events` | List K8s events for a resource |
+| Tool | Type | Description |
+|------|------|-------------|
+| `helm_install` | Helm | Install a Helm chart release |
+| `helm_upgrade` | Helm | Upgrade a Helm release with new values |
+| `helm_status` | Helm | Get release status |
+| `helm_get_values` | Helm | Get current release values |
+| `helm_show_values` | Helm | Show chart's default values |
+| `apply_template` | K8s | Render and apply a K8s manifest template |
+| `run_action` | K8s | Execute a skill-defined script in a pod |
+| `kubectl_exec` | K8s | Execute a command in a pod |
+| `kubectl_get` | K8s | Get a K8s resource (with jsonpath) |
+| `kubectl_describe` | K8s | Describe a K8s resource |
+| `kubectl_scale` | K8s | Scale a deployment/statefulset |
+| `kubectl_patch` | K8s | Patch a K8s resource |
+| `get_state` | State | Get current K8s state (pods, statefulsets, monitors) |
+| `update_status` | State | Update AIResource status (phase, message) |
+| `get_pod_logs` | State | Get pod logs |
+| `wait_for_ready` | State | Wait until expected pods are ready |
+| `get_events` | State | List K8s events for a resource |
+| `file_read` | FS | Read a file from the skill directory |
+| `ls` | FS | List directory contents |
+| `glob` | FS | Find files by glob pattern |
+| `grep` | FS | Search file contents with regex |
+| `content_search` | FS | Find files containing a pattern |
+| `file_list` | FS | Recursive directory tree listing |
+
+All filesystem tools are sandboxed to the skill directory — path traversal is rejected.
 
 ## Safety
 
-- **Multi-agent pipeline** — separate agents for planning, validation, execution, verification
-- **Simulator** — rejects unsafe plans (e.g., cluster_init on existing cluster with data)
-- **Circuit breaker** — 3 consecutive failures → stops retrying, enters Failed phase
+- **Circuit breaker** — 3 consecutive failures → stops retrying, auto-resets after 60s
 - **Guardrails** — per-resource: max replicas, max memory, denied commands
-- **Risk-based routing** — low-risk events skip planner/simulator for faster healing
+- **Event filtering** — goal-achieved flag suppresses redundant monitor events
+- **Cooldown** — prevents event storms after successful reconciliation
+- **Tool allowlist** — each skill declares which tools the agent can use
+- **Filesystem sandbox** — agent can only read files within its skill directory
 - **ownerReferences** — automatic garbage collection on AIResource deletion
 
 ## Configuration
@@ -321,12 +319,13 @@ When the AIResource itself is deleted, K8s garbage collection automatically clea
 |-------|-------------|----------|
 | `spec.skill` | Skill name (directory under SKILLS_DIR) | Yes |
 | `spec.goal` | Natural language goal for the agent | Yes |
-| `spec.image` | Container image to deploy | Yes |
+| `spec.image` | Container image (optional for Helm-based skills) | No |
 | `spec.resources` | Container resource limits | No |
 | `spec.agent.provider` | `anthropic` or `vertex` | No (default: anthropic) |
 | `spec.agent.model` | Model ID | No |
 | `spec.agent.project_id` | GCP project for Vertex AI | If provider=vertex |
 | `spec.agent.region` | GCP region | If provider=vertex |
+| `spec.agent.max_iterations` | Max agent loop iterations | No (default: 50) |
 | `spec.guardrails` | Safety constraints | No |
 
 ### Environment Variables
@@ -345,41 +344,40 @@ When the AIResource itself is deleted, K8s garbage collection automatically clea
 src/
 ├── main.rs              # Entry point
 ├── controller/
-│   ├── mod.rs           # Reconciler: watches, drift detection, event routing
+│   ├── mod.rs           # Reconciler: watches, drift detection, adaptive requeue
 │   └── status.rs        # CRD status updates
 ├── agent/
-│   ├── agent.rs         # Autonomous tool-calling loop
-│   ├── worker.rs        # Agent instance lifecycle + circuit breaker
+│   ├── agent.rs         # Autonomous agent loop (loop detection, compaction)
+│   ├── worker.rs        # Agent instance lifecycle, event filtering, circuit breaker
 │   ├── provider.rs      # Vertex AI + Anthropic API
 │   ├── tool.rs          # Tool trait + safety levels
 │   └── types.rs         # Agent types
 ├── pipeline/
-│   ├── mod.rs           # Multi-agent pipeline orchestration
-│   ├── planner.rs       # Plan generation agent
-│   ├── simulator.rs     # Plan validation agent
-│   ├── executor.rs      # Plan execution agent
-│   └── verifier.rs      # Result verification agent
+│   ├── mod.rs           # Pipeline entry point + timeout
+│   └── executor.rs      # Single agent continuous reasoning
 ├── skill/
 │   ├── loader.rs        # SKILL.md parser (YAML frontmatter + markdown)
-│   ├── types.rs         # Skill config types
-│   └── trigger.rs       # Monitor trigger evaluation
+│   └── types.rs         # Skill config types
 ├── tools/
-│   ├── desired_state.rs # Desired-state annotation read/write + ownerRef helper
-│   ├── k8s.rs           # K8s tools (server-side apply, pod status, logs, events)
-│   ├── runtime.rs       # RunAction + ApplyTemplate (with ownerRef + desired-state storage)
+│   ├── helm.rs          # Helm CLI tools (install, upgrade, status, get-values, show-values)
+│   ├── k8s.rs           # K8s tools (exec, get, describe, scale, patch, logs, events)
+│   ├── fs.rs            # Sandboxed filesystem tools (read, ls, glob, grep, search, list)
+│   ├── runtime.rs       # RunAction + ApplyTemplate
 │   ├── state.rs         # GetState + UpdateStatus
+│   ├── desired_state.rs # Desired-state annotation read/write + ownerRef helper
 │   ├── template.rs      # Template variable rendering
-│   └── mod.rs           # Tool registration per pipeline role
+│   └── mod.rs           # Tool registration + skill allowlist filtering
 ├── monitor/             # Monitor registry + runner
 ├── channel.rs           # Per-resource event channels
 ├── crd.rs               # AIResource CRD definition
-└── types.rs             # StateSnapshot, ResourceEvent, DriftInfo, CircuitBreaker
+└── types.rs             # StateSnapshot, ResourceEvent, CircuitBreaker
 ```
 
 ## Built With
 
 - [kube-rs](https://github.com/kube-rs/kube) — Kubernetes controller runtime (Rust)
 - [Claude](https://docs.anthropic.com/en/docs/about-claude/models) via Vertex AI or Anthropic API
+- [Bitnami Helm Charts](https://github.com/bitnami/charts) — for Helm-based skills
 
 ## License
 
